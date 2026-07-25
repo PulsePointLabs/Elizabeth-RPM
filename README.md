@@ -18,6 +18,10 @@ labeled simulated. Live cost accounting will use standard Mode 01 PID `015E` whe
 unsupported values are not replaced with fake measured data. Automatic nearby pricing remains
 behind a provider interface until a reliable user-configured price source is available.
 
+The v0.2.1 landscape refinement adds non-wrapping metric typography, a speed arc, animated
+fill bars on every dashboard metric, rounded status instruments, and continuous green-to-amber-
+to-red color transitions based on each parameter's load or status.
+
 ## Build
 
 1. Install Android Studio with Android SDK 36 and JDK 17.

@@ -1,6 +1,10 @@
 package com.pulsepointlabs.elizabethlive.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,15 +26,23 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pulsepointlabs.elizabethlive.ConnectionState
@@ -43,7 +55,9 @@ import com.pulsepointlabs.elizabethlive.ui.theme.BoostTeal
 import com.pulsepointlabs.elizabethlive.ui.theme.GoodGreen
 import com.pulsepointlabs.elizabethlive.ui.theme.RpmBlue
 import com.pulsepointlabs.elizabethlive.ui.theme.ThrottleAmber
+import com.pulsepointlabs.elizabethlive.ui.theme.WarningRed
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.max
 
 @Composable
@@ -65,22 +79,23 @@ fun LandscapeDashboard(
             .background(MaterialTheme.colorScheme.background)
             .statusBarsPadding()
             .navigationBarsPadding()
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         DashboardHeader(state, onExit, onToggleTrip)
         Row(
             modifier = Modifier.fillMaxWidth().weight(1f),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            SpeedPanel(sample, units, Modifier.weight(.28f).fillMaxHeight())
-            CenterPanel(state, sample, units, Modifier.weight(.44f).fillMaxHeight())
+            SpeedPanel(sample, units, Modifier.weight(.27f).fillMaxHeight())
+            CenterPanel(state, sample, units, Modifier.weight(.45f).fillMaxHeight())
             SupportingPanel(
                 sample = sample,
                 units = units,
                 tripCost = tripCost,
                 durationSeconds = durationSeconds,
                 fuelPrice = price,
+                fuelUsedLiters = state.liveFuelUsedLiters,
                 modifier = Modifier.weight(.28f).fillMaxHeight(),
             )
         }
@@ -93,82 +108,112 @@ private fun DashboardHeader(
     onExit: () -> Unit,
     onToggleTrip: () -> Unit,
 ) {
+    val connected = state.connectionState == ConnectionState.CONNECTED
     Row(
-        modifier = Modifier.fillMaxWidth().height(52.dp),
+        modifier = Modifier.fillMaxWidth().height(46.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             "ELIZABETH",
-            style = MaterialTheme.typography.titleLarge,
+            fontSize = 20.sp,
             fontWeight = FontWeight.Black,
-            letterSpacing = 1.8.sp,
-        )
-        Spacer(Modifier.width(14.dp))
-        val connected = state.connectionState == ConnectionState.CONNECTED
-        Box(
-            Modifier
-                .size(11.dp)
-                .clip(CircleShape)
-                .background(if (connected) GoodGreen else ThrottleAmber)
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            if (connected) "Connected · ${state.adapterName}" else "Demo source · ${state.adapterName}",
-            fontSize = 16.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            letterSpacing = 1.4.sp,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
         )
         Spacer(Modifier.width(10.dp))
+        Surface(
+            color = (if (connected) GoodGreen else ThrottleAmber).copy(alpha = .13f),
+            shape = CircleShape,
+        ) {
+            Row(
+                Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier
+                        .size(9.dp)
+                        .background(if (connected) GoodGreen else ThrottleAmber, CircleShape)
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    if (connected) "Connected · ${state.adapterName}" else "Demo · ${state.adapterName}",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                )
+            }
+        }
+        Spacer(Modifier.width(8.dp))
         Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = CircleShape) {
             Text(
                 "SIMULATED",
-                Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
+                Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Black,
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
+                maxLines = 1,
             )
         }
         Spacer(Modifier.weight(1f))
-        Button(onClick = onToggleTrip, modifier = Modifier.height(50.dp)) {
-            Text(if (state.trip.isRecording) "Stop trip" else "Start trip", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Button(onClick = onToggleTrip, modifier = Modifier.height(44.dp)) {
+            Text(if (state.trip.isRecording) "Stop trip" else "Start trip", fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1)
         }
-        Spacer(Modifier.width(10.dp))
-        Button(onClick = onExit, modifier = Modifier.height(50.dp)) {
-            Text("Exit dashboard", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.width(8.dp))
+        OutlinedButton(onClick = onExit, modifier = Modifier.height(44.dp)) {
+            Text("Exit dashboard", fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1)
         }
     }
 }
 
 @Composable
 private fun SpeedPanel(sample: TelemetrySample?, units: UnitSystem, modifier: Modifier = Modifier) {
-    DashboardCard(modifier) {
+    val speed = when (units) {
+        UnitSystem.US -> (sample?.speedKph ?: 0.0) * .621371
+        UnitSystem.METRIC -> sample?.speedKph ?: 0.0
+    }
+    val maxSpeed = if (units == UnitSystem.US) 120.0 else 190.0
+    val speedProgress = (speed / maxSpeed).toFloat().coerceIn(0f, 1f)
+    val speedSeverity = ((speedProgress - .42f) / .45f).coerceIn(0f, 1f)
+    val speedColor = animatedStatusColor(speedSeverity)
+    val throttleProgress = ((sample?.throttlePercent ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f)
+    val throttleColor = animatedStatusColor(throttleProgress)
+
+    DashboardCard(modifier, accentColor = speedColor) {
         Column(
-            modifier = Modifier.fillMaxSize().padding(14.dp),
+            modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 10.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
+            verticalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text("SPEED", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(
-                text = when (units) {
-                    UnitSystem.US -> ((sample?.speedKph ?: 0.0) * .621371).toInt().toString()
-                    UnitSystem.METRIC -> (sample?.speedKph ?: 0.0).toInt().toString()
-                },
-                fontSize = 88.sp,
-                lineHeight = 88.sp,
-                fontWeight = FontWeight.Black,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                if (units == UnitSystem.US) "MPH" else "KM/H",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                color = RpmBlue,
-            )
-            Spacer(Modifier.height(12.dp))
-            ValueStrip(
-                "THROTTLE",
-                "${sample?.throttlePercent?.toInt() ?: 0}%",
-                ThrottleAmber,
+            Text("SPEED", fontSize = 15.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Box(
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                contentAlignment = Alignment.Center,
+            ) {
+                SpeedArc(speedProgress, speedColor, Modifier.fillMaxSize())
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        speed.toInt().toString(),
+                        fontSize = 76.sp,
+                        lineHeight = 76.sp,
+                        fontWeight = FontWeight.Black,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                    Text(
+                        if (units == UnitSystem.US) "MPH" else "KM/H",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Black,
+                        color = speedColor,
+                    )
+                }
+            }
+            MetricBarBox(
+                label = "THROTTLE",
+                value = "${sample?.throttlePercent?.toInt() ?: 0}%",
+                progress = throttleProgress,
+                color = throttleColor,
             )
         }
     }
@@ -181,53 +226,58 @@ private fun CenterPanel(
     units: UnitSystem,
     modifier: Modifier = Modifier,
 ) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        DashboardCard(Modifier.fillMaxWidth().weight(.43f)) {
+    val rpmProgress = ((sample?.rpm ?: 0.0) / 6_500.0).toFloat().coerceIn(0f, 1f)
+    val rpmColor = animatedStatusColor(((rpmProgress - .45f) / .5f).coerceIn(0f, 1f))
+    val boostPsi = sample?.boostPsi ?: 0.0
+    val boostProgress = ((boostPsi + 12.0) / 30.0).toFloat().coerceIn(0f, 1f)
+    val boostLoad = (boostPsi.coerceAtLeast(0.0) / 18.0).toFloat().coerceIn(0f, 1f)
+    val boostColor = animatedStatusColor(boostLoad)
+
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        DashboardCard(Modifier.fillMaxWidth().weight(.47f), accentColor = maxColor(rpmColor, boostColor)) {
             Row(
-                Modifier.fillMaxSize().padding(horizontal = 18.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text("ENGINE", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Row(verticalAlignment = Alignment.Bottom) {
-                        Text(
-                            "${sample?.rpm?.toInt() ?: 0}",
-                            fontSize = 52.sp,
-                            lineHeight = 54.sp,
-                            fontWeight = FontWeight.Black,
-                            color = RpmBlue,
-                        )
-                        Text(" RPM", Modifier.padding(bottom = 7.dp), fontSize = 17.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-                Column(horizontalAlignment = Alignment.End) {
-                    Text("CALCULATED BOOST / VACUUM", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(
-                        if (units == UnitSystem.US) {
-                            "${sample?.boostPsi?.oneDecimal() ?: "0.0"} psi"
-                        } else {
-                            "${sample?.boostPsi?.times(6.89476)?.oneDecimal() ?: "0.0"} kPa"
-                        },
-                        fontSize = 34.sp,
-                        fontWeight = FontWeight.Black,
-                        color = BoostTeal,
-                    )
-                }
+                PrimaryMetric(
+                    label = "ENGINE RPM",
+                    value = "${sample?.rpm?.toInt() ?: 0}",
+                    unit = "rpm",
+                    progress = rpmProgress,
+                    color = rpmColor,
+                    modifier = Modifier.weight(.47f).fillMaxHeight(),
+                )
+                PrimaryMetric(
+                    label = "CALCULATED BOOST / VACUUM",
+                    value = if (units == UnitSystem.US) {
+                        boostPsi.oneDecimal()
+                    } else {
+                        (boostPsi * 6.89476).oneDecimal()
+                    },
+                    unit = if (units == UnitSystem.US) "psi" else "kPa",
+                    progress = boostProgress,
+                    color = boostColor,
+                    modifier = Modifier.weight(.53f).fillMaxHeight(),
+                )
             }
         }
-        DashboardCard(Modifier.fillMaxWidth().weight(.57f)) {
+        DashboardCard(Modifier.fillMaxWidth().weight(.53f), accentColor = RpmBlue) {
             Column(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
-                Row(Modifier.fillMaxWidth()) {
-                    Text("LAST 30 SECONDS", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("LIVE TREND · 30 SEC", fontSize = 13.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.weight(1f))
-                    Text("RPM   BOOST   THROTTLE", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    LegendDot(RpmBlue, "RPM")
+                    Spacer(Modifier.width(10.dp))
+                    LegendDot(BoostTeal, "BOOST")
+                    Spacer(Modifier.width(10.dp))
+                    LegendDot(ThrottleAmber, "THROTTLE")
                 }
                 RollingTelemetryChart(
                     samples = state.samples.takeLast(120),
                     channels = setOf("RPM", "Boost", "Throttle"),
                     inspected = null,
                     modifier = Modifier.fillMaxWidth(),
-                    chartHeight = 104.dp,
+                    chartHeight = 100.dp,
                     onTap = { },
                     onInspect = { },
                 )
@@ -243,99 +293,304 @@ private fun SupportingPanel(
     tripCost: Double,
     durationSeconds: Long,
     fuelPrice: Double,
+    fuelUsedLiters: Double,
     modifier: Modifier = Modifier,
 ) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            SmallMetric(
-                "COOLANT",
-                sample?.coolantC?.temperature(units) ?: "—",
-                RpmBlue,
-                Modifier.weight(1f).fillMaxHeight(),
+    val coolant = sample?.coolantC ?: 0.0
+    val coolantSeverity = when {
+        coolant <= 100 -> 0f
+        else -> ((coolant - 100) / 15).toFloat().coerceIn(0f, 1f)
+    }
+    val intake = sample?.intakeC ?: 0.0
+    val intakeSeverity = ((intake - 35) / 35).toFloat().coerceIn(0f, 1f)
+    val voltage = sample?.voltage ?: 0.0
+    val voltageSeverity = when {
+        voltage == 0.0 -> 0f
+        voltage < 12.5 -> ((12.5 - voltage) / 2.0).toFloat().coerceIn(0f, 1f)
+        voltage > 14.9 -> ((voltage - 14.9) / .8).toFloat().coerceIn(0f, 1f)
+        else -> 0f
+    }
+    val fuelRate = sample?.fuelRateLitersPerHour ?: 0.0
+    val fuelLoad = (fuelRate / 30.0).toFloat().coerceIn(0f, 1f)
+
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            VisualMetricTile(
+                label = "COOLANT",
+                value = sample?.coolantC?.temperature(units) ?: "—",
+                progress = (coolant / 120.0).toFloat().coerceIn(0f, 1f),
+                severity = coolantSeverity,
+                modifier = Modifier.weight(1f).fillMaxHeight(),
             )
-            SmallMetric(
-                "INTAKE AIR",
-                sample?.intakeC?.temperature(units) ?: "—",
-                ThrottleAmber,
-                Modifier.weight(1f).fillMaxHeight(),
+            VisualMetricTile(
+                label = "INTAKE AIR",
+                value = sample?.intakeC?.temperature(units) ?: "—",
+                progress = (intake / 80.0).toFloat().coerceIn(0f, 1f),
+                severity = intakeSeverity,
+                modifier = Modifier.weight(1f).fillMaxHeight(),
             )
         }
-        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            SmallMetric(
-                "VOLTAGE",
-                "${sample?.voltage?.oneDecimal() ?: "—"} V",
-                BoostTeal,
-                Modifier.weight(1f).fillMaxHeight(),
+        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            VisualMetricTile(
+                label = "VOLTAGE",
+                value = "${sample?.voltage?.oneDecimal() ?: "—"} V",
+                progress = ((voltage - 9.0) / 7.0).toFloat().coerceIn(0f, 1f),
+                severity = voltageSeverity,
+                modifier = Modifier.weight(1f).fillMaxHeight(),
             )
-            SmallMetric(
-                "FUEL RATE",
-                "${sample?.fuelRateLitersPerHour?.oneDecimal() ?: "—"} L/h",
-                GoodGreen,
-                Modifier.weight(1f).fillMaxHeight(),
+            VisualMetricTile(
+                label = "FUEL RATE",
+                value = "${sample?.fuelRateLitersPerHour?.oneDecimal() ?: "—"} L/h",
+                progress = fuelLoad,
+                severity = fuelLoad,
+                modifier = Modifier.weight(1f).fillMaxHeight(),
             )
         }
-        DashboardCard(Modifier.fillMaxWidth().weight(1.18f)) {
-            Row(
-                Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("TRIP COST", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text("$${tripCost.money()}", fontSize = 34.sp, fontWeight = FontWeight.Black, color = GoodGreen)
+        val costProgress = (fuelUsedLiters / 11.36).toFloat().coerceIn(0f, 1f)
+        val costColor = animatedStatusColor(costProgress)
+        DashboardCard(Modifier.fillMaxWidth().weight(1.12f), accentColor = costColor) {
+            Column(Modifier.fillMaxSize().padding(horizontal = 13.dp, vertical = 8.dp)) {
+                Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("TRIP COST", fontSize = 13.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            "$${tripCost.money()}",
+                            fontSize = 31.sp,
+                            lineHeight = 32.sp,
+                            fontWeight = FontWeight.Black,
+                            color = costColor,
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                    }
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(formatDuration(durationSeconds), fontSize = 21.sp, fontWeight = FontWeight.Black, maxLines = 1)
+                        Text(
+                            "$${fuelPrice.money()} / gal",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
                 }
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(formatDuration(durationSeconds), fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                    Text(
-                        "$${fuelPrice.money()} / gal",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                StatusBar(costProgress, costColor, modifier = Modifier.fillMaxWidth())
             }
         }
     }
 }
 
 @Composable
-private fun SmallMetric(label: String, value: String, color: Color, modifier: Modifier = Modifier) {
-    DashboardCard(modifier) {
+private fun PrimaryMetric(
+    label: String,
+    value: String,
+    unit: String,
+    progress: Float,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier, verticalArrangement = Arrangement.SpaceBetween) {
+        Text(
+            label,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Black,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                value,
+                modifier = Modifier.weight(1f, fill = false),
+                fontSize = 42.sp,
+                lineHeight = 43.sp,
+                fontWeight = FontWeight.Black,
+                color = color,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Clip,
+            )
+            Spacer(Modifier.width(5.dp))
+            Text(
+                unit,
+                Modifier.padding(bottom = 5.dp),
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Black,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+        }
+        StatusBar(progress, color, Modifier.fillMaxWidth())
+    }
+}
+
+@Composable
+private fun VisualMetricTile(
+    label: String,
+    value: String,
+    progress: Float,
+    severity: Float,
+    modifier: Modifier = Modifier,
+) {
+    val color = animatedStatusColor(severity)
+    DashboardCard(modifier, accentColor = color) {
         Column(
-            Modifier.fillMaxSize().padding(8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
+            Modifier.fillMaxSize().padding(horizontal = 9.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text(label, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
-            Text(value, fontSize = 25.sp, lineHeight = 27.sp, fontWeight = FontWeight.Black, color = color, textAlign = TextAlign.Center)
+            Text(
+                label,
+                fontSize = 13.sp,
+                lineHeight = 13.sp,
+                fontWeight = FontWeight.Black,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                value,
+                fontSize = 23.sp,
+                lineHeight = 25.sp,
+                fontWeight = FontWeight.Black,
+                color = color,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Clip,
+            )
+            StatusBar(progress, color, Modifier.fillMaxWidth())
         }
     }
 }
 
 @Composable
-private fun ValueStrip(label: String, value: String, color: Color) {
+private fun MetricBarBox(
+    label: String,
+    value: String,
+    progress: Float,
+    color: Color,
+) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant,
+        color = color.copy(alpha = .08f),
         shape = RoundedCornerShape(14.dp),
     ) {
-        Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(label, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.weight(1f))
-            Text(value, fontSize = 26.sp, fontWeight = FontWeight.Black, color = color)
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(label, fontSize = 13.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.weight(1f))
+                Text(value, fontSize = 23.sp, fontWeight = FontWeight.Black, color = color, maxLines = 1)
+            }
+            Spacer(Modifier.height(5.dp))
+            StatusBar(progress, color, Modifier.fillMaxWidth())
         }
     }
 }
 
 @Composable
-private fun DashboardCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+private fun StatusBar(progress: Float, color: Color, modifier: Modifier = Modifier) {
+    val animatedProgress by animateFloatAsState(
+        targetValue = progress.coerceIn(0f, 1f),
+        animationSpec = tween(320),
+        label = "metricFill",
+    )
+    Box(
+        modifier
+            .height(7.dp)
+            .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth(animatedProgress)
+                .height(7.dp)
+                .background(
+                    Brush.horizontalGradient(listOf(GoodGreen.copy(alpha = .7f), color)),
+                    CircleShape,
+                )
+        )
+    }
+}
+
+@Composable
+private fun SpeedArc(progress: Float, color: Color, modifier: Modifier = Modifier) {
+    val animatedProgress by animateFloatAsState(progress.coerceIn(0f, 1f), tween(350), label = "speedArc")
+    val track = MaterialTheme.colorScheme.surfaceVariant
+    Canvas(modifier.padding(horizontal = 12.dp, vertical = 5.dp)) {
+        val stroke = 10.dp.toPx()
+        val inset = stroke / 2
+        val arcSize = Size(size.width - stroke, size.height * 1.5f)
+        drawArc(
+            color = track,
+            startAngle = 165f,
+            sweepAngle = 210f,
+            useCenter = false,
+            topLeft = Offset(inset, size.height * .08f),
+            size = arcSize,
+            style = Stroke(stroke, cap = StrokeCap.Round),
+        )
+        drawArc(
+            color = color,
+            startAngle = 165f,
+            sweepAngle = 210f * animatedProgress,
+            useCenter = false,
+            topLeft = Offset(inset, size.height * .08f),
+            size = arcSize,
+            style = Stroke(stroke, cap = StrokeCap.Round),
+        )
+    }
+}
+
+@Composable
+private fun LegendDot(color: Color, label: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(7.dp).background(color, CircleShape))
+        Spacer(Modifier.width(4.dp))
+        Text(label, fontSize = 12.sp, fontWeight = FontWeight.Black)
+    }
+}
+
+@Composable
+private fun DashboardCard(
+    modifier: Modifier = Modifier,
+    accentColor: Color = MaterialTheme.colorScheme.outline,
+    content: @Composable () -> Unit,
+) {
     Card(
         modifier = modifier,
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-        content = { content() },
-    )
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+    ) {
+        Box(Modifier.fillMaxSize()) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .background(accentColor.copy(alpha = .8f))
+            )
+            content()
+        }
+    }
 }
+
+@Composable
+private fun animatedStatusColor(severity: Float): Color {
+    val target = statusColor(severity)
+    return animateColorAsState(target, tween(320), label = "statusColor").value
+}
+
+private fun statusColor(severity: Float): Color {
+    val value = severity.coerceIn(0f, 1f)
+    return if (value <= .5f) {
+        lerp(GoodGreen, ThrottleAmber, value * 2f)
+    } else {
+        lerp(ThrottleAmber, WarningRed, (value - .5f) * 2f)
+    }
+}
+
+private fun maxColor(first: Color, second: Color): Color =
+    if (colorHeat(first) >= colorHeat(second)) first else second
+
+private fun colorHeat(color: Color): Float = color.red - color.green * .35f
 
 private fun Double.oneDecimal(): String = String.format(Locale.US, "%.1f", this)
 private fun Double.money(): String = String.format(Locale.US, "%.2f", this)
