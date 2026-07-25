@@ -23,6 +23,11 @@ Version 0.3.0 adds the first real acquisition path for a paired Vgate vLinker MC
 
 Demo Mode is off by default and must be started explicitly from the Live screen.
 
+Version 0.3.1 makes landscape a true driving surface even before connection: it always opens
+the dashboard, provides Connect/Disconnect directly in the compact header, hides Android system
+bars while active, removes portrait navigation and inset padding, and restores the normal app
+and system bars through the visible Exit dashboard control.
+
 ## Landscape driving dashboard
 
 Rotating into landscape opens a dedicated, glanceable dashboard with oversized speed, RPM,

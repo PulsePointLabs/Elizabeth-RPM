@@ -141,16 +141,20 @@ private fun ElizabethApp(state: ElizabethUiState, viewModel: ElizabethViewModel)
     LaunchedEffect(isLandscape) {
         if (!isLandscape) dashboardDismissed = false
     }
-    if (
-        isLandscape &&
-        !dashboardDismissed &&
-        (state.connectionState == ConnectionState.CONNECTED || state.samples.isNotEmpty())
-    ) {
+    if (isLandscape && !dashboardDismissed) {
         LandscapeDashboard(
             state = state,
             onExit = { dashboardDismissed = true },
             onToggleTrip = viewModel::toggleTrip,
+            onConnectionControl = onConnectionControl,
         )
+        if (state.showDevicePicker) {
+            PairedDeviceDialog(
+                devices = state.pairedDevices,
+                onSelect = viewModel::selectDevice,
+                onDismiss = viewModel::dismissDevicePicker,
+            )
+        }
         return
     }
     Scaffold(

@@ -1,5 +1,6 @@
 package com.pulsepointlabs.elizabethlive.ui
 
+import android.app.Activity
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -15,10 +16,8 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,6 +29,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,11 +40,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.pulsepointlabs.elizabethlive.ConnectionState
 import com.pulsepointlabs.elizabethlive.ElizabethUiState
 import com.pulsepointlabs.elizabethlive.TelemetrySample
@@ -65,8 +69,10 @@ fun LandscapeDashboard(
     state: ElizabethUiState,
     onExit: () -> Unit,
     onToggleTrip: () -> Unit,
+    onConnectionControl: () -> Unit,
 ) {
     BackHandler(onBack = onExit)
+    ImmersiveDashboardEffect()
     val sample = state.samples.lastOrNull()
     val units = state.settings.units
     val price = state.settings.fuelPricePerGallon
@@ -79,15 +85,13 @@ fun LandscapeDashboard(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .statusBarsPadding()
-            .navigationBarsPadding()
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        DashboardHeader(state, onExit, onToggleTrip)
+        DashboardHeader(state, onExit, onToggleTrip, onConnectionControl)
         Row(
             modifier = Modifier.fillMaxWidth().weight(1f),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             SpeedPanel(sample, units, Modifier.weight(.27f).fillMaxHeight())
             CenterPanel(state, sample, units, Modifier.weight(.45f).fillMaxHeight())
@@ -109,10 +113,11 @@ private fun DashboardHeader(
     state: ElizabethUiState,
     onExit: () -> Unit,
     onToggleTrip: () -> Unit,
+    onConnectionControl: () -> Unit,
 ) {
     val connected = state.connectionState == ConnectionState.CONNECTED
     Row(
-        modifier = Modifier.fillMaxWidth().height(46.dp),
+        modifier = Modifier.fillMaxWidth().height(42.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -142,7 +147,9 @@ private fun DashboardHeader(
                     when {
                         connected && state.isSimulated -> "Demo · simulated"
                         connected -> "Live · ${state.adapterName}"
-                        else -> "Reconnecting · ${state.adapterName}"
+                        state.connectionState == ConnectionState.CONNECTING -> "Connecting · ${state.adapterName}"
+                        state.connectionState == ConnectionState.RECONNECTING -> "Reconnecting · ${state.adapterName}"
+                        else -> "Disconnected · ready to connect"
                     },
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
@@ -151,23 +158,52 @@ private fun DashboardHeader(
             }
         }
         Spacer(Modifier.width(8.dp))
-        Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = CircleShape) {
-            Text(
-                "SIMULATED",
-                Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Black,
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                maxLines = 1,
-            )
+        if (state.isSimulated) {
+            Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = CircleShape) {
+                Text(
+                    "SIMULATED",
+                    Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Black,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    maxLines = 1,
+                )
+            }
         }
         Spacer(Modifier.weight(1f))
-        Button(onClick = onToggleTrip, modifier = Modifier.height(44.dp)) {
-            Text(if (state.trip.isRecording) "Stop trip" else "Start trip", fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        if (connected) {
+            Button(onClick = onToggleTrip, modifier = Modifier.height(40.dp)) {
+                Text(if (state.trip.isRecording) "Stop trip" else "Start trip", fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+            }
+            Spacer(Modifier.width(6.dp))
         }
-        Spacer(Modifier.width(8.dp))
-        OutlinedButton(onClick = onExit, modifier = Modifier.height(44.dp)) {
-            Text("Exit dashboard", fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        if (connected || state.connectionState != ConnectionState.DISCONNECTED || state.isSimulated) {
+            OutlinedButton(onClick = onConnectionControl, modifier = Modifier.height(40.dp)) {
+                Text(if (connected || state.isSimulated) "Disconnect" else "Cancel", fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+            }
+        } else {
+            Button(onClick = onConnectionControl, modifier = Modifier.height(40.dp)) {
+                Text("Connect", fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+            }
+        }
+        Spacer(Modifier.width(6.dp))
+        OutlinedButton(onClick = onExit, modifier = Modifier.height(40.dp)) {
+            Text("Exit dashboard", fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        }
+    }
+}
+
+@Composable
+private fun ImmersiveDashboardEffect() {
+    val view = LocalView.current
+    DisposableEffect(view) {
+        val window = (view.context as Activity).window
+        val controller = WindowCompat.getInsetsController(window, view)
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        onDispose {
+            controller.show(WindowInsetsCompat.Type.systemBars())
         }
     }
 }
