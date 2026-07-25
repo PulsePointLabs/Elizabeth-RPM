@@ -43,6 +43,9 @@ object StandardPids {
         PidDefinition(1, 0x42, "Control-module voltage", "V", PollPriority.SLOW) {
             if (it.size >= 2) ((it[0] * 256) + it[1]) / 1000.0 else null
         },
+        PidDefinition(1, 0x5E, "Engine fuel rate", "L/h", PollPriority.MEDIUM) {
+            if (it.size >= 2) ((it[0] * 256) + it[1]) / 20.0 else null
+        },
     )
 
     fun calculatedBoostPsi(mapKpa: Double, barometricKpa: Double): Double =

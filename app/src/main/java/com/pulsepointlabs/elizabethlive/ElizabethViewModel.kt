@@ -1,6 +1,7 @@
 package com.pulsepointlabs.elizabethlive
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -15,8 +16,24 @@ import kotlin.math.max
 import kotlin.math.sin
 import kotlin.random.Random
 
-class ElizabethViewModel : ViewModel() {
-    private val mutableState = MutableStateFlow(ElizabethUiState())
+class ElizabethViewModel(application: Application) : AndroidViewModel(application) {
+    private val preferences = application.getSharedPreferences("elizabeth_settings", 0)
+    private val hasSavedFuelPrice = preferences.contains("fuel_price_per_gallon")
+    private val savedFuelPrice = preferences.getFloat("fuel_price_per_gallon", 4.00f).toDouble()
+    private val mutableState = MutableStateFlow(
+        ElizabethUiState().let { initial ->
+            initial.copy(
+                settings = initial.settings.copy(
+                    fuelPricePerGallon = savedFuelPrice,
+                    fuelPriceSource = if (hasSavedFuelPrice) {
+                        "Saved local regular-gas price"
+                    } else {
+                        initial.settings.fuelPriceSource
+                    },
+                )
+            )
+        }
+    )
     val state: StateFlow<ElizabethUiState> = mutableState.asStateFlow()
     private var demoJob: Job? = null
     private var tick = 0L
@@ -67,6 +84,8 @@ class ElizabethViewModel : ViewModel() {
     fun toggleTrip() = mutableState.update {
         val nowRecording = !it.trip.isRecording
         it.copy(
+            liveDriveStartedAtMillis = if (nowRecording) System.currentTimeMillis() else it.liveDriveStartedAtMillis,
+            liveFuelUsedLiters = if (nowRecording) 0.0 else it.liveFuelUsedLiters,
             trip = if (nowRecording) {
                 it.trip.copy(isRecording = true, startedAtMillis = System.currentTimeMillis(), events = emptyList())
             } else {
@@ -90,6 +109,18 @@ class ElizabethViewModel : ViewModel() {
     }
     fun setRecordingInterval(intervalMillis: Long) = mutableState.update {
         it.copy(settings = it.settings.copy(recordingIntervalMillis = intervalMillis))
+    }
+    fun setFuelPricePerGallon(price: Double) {
+        val safePrice = price.coerceIn(0.50, 15.00)
+        preferences.edit().putFloat("fuel_price_per_gallon", safePrice.toFloat()).apply()
+        mutableState.update {
+        it.copy(
+            settings = it.settings.copy(
+                fuelPricePerGallon = safePrice,
+                fuelPriceSource = "Manually entered local price",
+            )
+        )
+        }
     }
     fun toggleAutoStart() = mutableState.update {
         it.copy(settings = it.settings.copy(autoStartRecording = !it.settings.autoStartRecording))
@@ -115,6 +146,8 @@ class ElizabethViewModel : ViewModel() {
                     mutableState.update {
                         it.copy(
                             samples = updated,
+                            liveFuelUsedLiters = it.liveFuelUsedLiters +
+                                sample.fuelRateLitersPerHour * 0.25 / 3_600.0,
                             trip = if (it.trip.isRecording && event != null) {
                                 it.trip.copy(events = (it.trip.events + event).takeLast(20))
                             } else it.trip,
@@ -156,6 +189,13 @@ class ElizabethViewModel : ViewModel() {
             voltage = values.voltage + noise(.025),
             engineLoad = (values.throttle * 1.08).coerceIn(0.0, 100.0),
             timingAdvance = 16 + wave * 6,
+            fuelRateLitersPerHour = when (scenario) {
+                DriveScenario.IDLE, DriveScenario.WARM_UP, DriveScenario.HEAT_SOAK -> 0.85 + values.engineDemand() * .01
+                DriveScenario.CRUISE -> 4.8 + wave * .7
+                DriveScenario.MODERATE -> 10.5 + wave * 2.2
+                DriveScenario.HARD -> 24.0 + wave * 5.0
+                DriveScenario.LOW_VOLTAGE_START -> if (tick % 40 < 8) 0.0 else 0.9
+            }.coerceAtLeast(0.0),
         )
     }
 
@@ -175,5 +215,7 @@ class ElizabethViewModel : ViewModel() {
         val coolant: Double,
         val intake: Double,
         val voltage: Double,
-    )
+    ) {
+        fun engineDemand(): Double = throttle / 100.0
+    }
 }

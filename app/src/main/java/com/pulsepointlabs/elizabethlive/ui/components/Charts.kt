@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.pulsepointlabs.elizabethlive.TelemetrySample
 import com.pulsepointlabs.elizabethlive.ui.theme.BoostTeal
@@ -30,6 +31,7 @@ fun RollingTelemetryChart(
     channels: Set<String>,
     inspected: TelemetrySample?,
     modifier: Modifier = Modifier,
+    chartHeight: Dp = 288.dp,
     onTap: () -> Unit,
     onInspect: (TelemetrySample?) -> Unit,
 ) {
@@ -38,7 +40,7 @@ fun RollingTelemetryChart(
     val chartBackground = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .45f)
     Box(
         modifier = modifier
-            .height(288.dp)
+            .height(chartHeight)
             .background(chartBackground, RoundedCornerShape(22.dp))
             .pointerInput(samples) {
                 detectTapGestures { offset ->
@@ -176,4 +178,3 @@ fun VoltageSparkline(samples: List<TelemetrySample>, modifier: Modifier = Modifi
         drawPath(path, color, style = Stroke(2.4.dp.toPx(), cap = StrokeCap.Round))
     }
 }
-

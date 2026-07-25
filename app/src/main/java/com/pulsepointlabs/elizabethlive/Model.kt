@@ -32,6 +32,7 @@ data class TelemetrySample(
     val voltage: Double,
     val engineLoad: Double,
     val timingAdvance: Double,
+    val fuelRateLitersPerHour: Double,
 )
 
 data class TripEvent(
@@ -55,6 +56,7 @@ data class TripSummary(
     val averageThrottle: Double = 21.0,
     val fuelTrimRange: ClosedFloatingPointRange<Double> = -4.7..7.8,
     val minimumVoltage: Double = 12.1,
+    val fuelUsedLiters: Double = 2.58,
     val events: List<TripEvent> = emptyList(),
 )
 
@@ -72,6 +74,8 @@ data class AppSettings(
     val defaultWindow: TimeWindow = TimeWindow.THIRTY_SECONDS,
     val recordingIntervalMillis: Long = 500,
     val autoStartRecording: Boolean = false,
+    val fuelPricePerGallon: Double = 4.00,
+    val fuelPriceSource: String = "Example local price · edit before use",
 )
 
 data class ElizabethUiState(
@@ -85,7 +89,8 @@ data class ElizabethUiState(
     val timeWindow: TimeWindow = TimeWindow.THIRTY_SECONDS,
     val graphPaused: Boolean = false,
     val inspectedSample: TelemetrySample? = null,
+    val liveDriveStartedAtMillis: Long = System.currentTimeMillis(),
+    val liveFuelUsedLiters: Double = 0.0,
     val trip: TripSummary = TripSummary(),
     val settings: AppSettings = AppSettings(),
 )
-

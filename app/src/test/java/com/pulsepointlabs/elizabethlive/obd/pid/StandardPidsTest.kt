@@ -40,6 +40,11 @@ class StandardPidsTest {
     }
 
     @Test
+    fun `engine fuel rate decodes liters per hour`() {
+        assertEquals(10.0, decoder(0x5E)(listOf(0x00, 0xC8))!!, 0.001)
+    }
+
+    @Test
     fun `calculated boost uses map minus barometric pressure`() {
         assertEquals(14.5038, StandardPids.calculatedBoostPsi(200.0, 100.0), 0.001)
         assertEquals(-7.2519, StandardPids.calculatedBoostPsi(50.0, 100.0), 0.001)
@@ -51,4 +56,3 @@ class StandardPidsTest {
         assertNull(decoder(0x42)(emptyList()))
     }
 }
-

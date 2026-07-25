@@ -1,11 +1,13 @@
 package com.pulsepointlabs.elizabethlive
 
+import android.content.res.Configuration
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -44,30 +46,39 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.pulsepointlabs.elizabethlive.ui.LandscapeDashboard
 import com.pulsepointlabs.elizabethlive.ui.components.DualTemperatureBars
 import com.pulsepointlabs.elizabethlive.ui.components.FuelTrimBalance
 import com.pulsepointlabs.elizabethlive.ui.components.RollingTelemetryChart
 import com.pulsepointlabs.elizabethlive.ui.components.VoltageSparkline
+import com.pulsepointlabs.elizabethlive.trip.FuelCostCalculator
+import com.pulsepointlabs.elizabethlive.trip.FuelUsageRecord
 import com.pulsepointlabs.elizabethlive.ui.theme.BoostTeal
 import com.pulsepointlabs.elizabethlive.ui.theme.ElizabethTheme
 import com.pulsepointlabs.elizabethlive.ui.theme.GoodGreen
@@ -99,7 +110,20 @@ private fun ElizabethApp(state: ElizabethUiState, viewModel: ElizabethViewModel)
         Destination("Trip", Icons.Rounded.DirectionsCar),
         Destination("Health", Icons.Rounded.FavoriteBorder),
     )
-    var selected by remember { mutableIntStateOf(0) }
+    var selected by rememberSaveable { mutableIntStateOf(0) }
+    var dashboardDismissed by rememberSaveable { mutableStateOf(false) }
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    LaunchedEffect(isLandscape) {
+        if (!isLandscape) dashboardDismissed = false
+    }
+    if (isLandscape && !dashboardDismissed) {
+        LandscapeDashboard(
+            state = state,
+            onExit = { dashboardDismissed = true },
+            onToggleTrip = viewModel::toggleTrip,
+        )
+        return
+    }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
@@ -129,6 +153,14 @@ private fun ElizabethApp(state: ElizabethUiState, viewModel: ElizabethViewModel)
                 .statusBarsPadding(),
         ) {
             ConnectionHeader(state, viewModel::connect)
+            if (isLandscape && dashboardDismissed) {
+                FilledTonalButton(
+                    onClick = { dashboardDismissed = false },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp).height(50.dp),
+                ) {
+                    Text("Open driving dashboard", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                }
+            }
             when (selected) {
                 0 -> LiveScreen(state, viewModel)
                 1 -> TripScreen(state, viewModel)
@@ -456,6 +488,9 @@ private fun TripScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
             }
         }
         item {
+            FuelCostSummaryCard(state, viewModel)
+        }
+        item {
             ElevatedCard(shape = RoundedCornerShape(22.dp)) {
                 Column(Modifier.padding(18.dp)) {
                     Text("Full-trip timeline", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
@@ -501,6 +536,98 @@ private fun TripScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
             EventRow(event)
         }
         item { Spacer(Modifier.height(8.dp)) }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun FuelCostSummaryCard(state: ElizabethUiState, viewModel: ElizabethViewModel) {
+    val settings = state.settings
+    var priceText by remember(settings.fuelPricePerGallon) {
+        mutableStateOf(settings.fuelPricePerGallon.money())
+    }
+    val now = System.currentTimeMillis()
+    val demoHistory = listOf(
+        FuelUsageRecord(now, state.trip.fuelUsedLiters),
+        FuelUsageRecord(now - 86_400_000L, 3.1),
+        FuelUsageRecord(now - 2 * 86_400_000L, 2.2),
+        FuelUsageRecord(now - 8 * 86_400_000L, 4.0),
+    )
+    val totals = FuelCostCalculator.aggregate(demoHistory, settings.fuelPricePerGallon)
+    val liveCost = FuelCostCalculator.cost(state.liveFuelUsedLiters, settings.fuelPricePerGallon)
+    ElevatedCard(shape = RoundedCornerShape(22.dp)) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Fuel cost", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(
+                        settings.fuelPriceSource,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                SimulatedBadge()
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                CostTile("Current trip", "$${liveCost.money()}", Modifier.weight(1f), GoodGreen)
+                CostTile("Recorded trip", "$${FuelCostCalculator.cost(state.trip.fuelUsedLiters, settings.fuelPricePerGallon).money()}", Modifier.weight(1f), BoostTeal)
+            }
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                maxItemsInEachRow = 3,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                CostTile("Today", "$${totals.today.money()}", Modifier.width(105.dp))
+                CostTile("This week", "$${totals.thisWeek.money()}", Modifier.width(105.dp))
+                CostTile("This month", "$${totals.thisMonth.money()}", Modifier.width(105.dp))
+            }
+            Text(
+                "Set your local regular-gas price",
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = priceText,
+                    onValueChange = { priceText = it.filter { char -> char.isDigit() || char == '.' }.take(5) },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("Dollars per gallon") },
+                    prefix = { Text("$") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                )
+                Button(
+                    onClick = { priceText.toDoubleOrNull()?.let(viewModel::setFuelPricePerGallon) },
+                    modifier = Modifier.height(56.dp),
+                ) {
+                    Text("Use price", fontWeight = FontWeight.Bold)
+                }
+            }
+            Text(
+                "Costs use reported fuel rate when available. Demo history is simulated; unsupported live fuel rate will never be shown as a measured cost.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun CostTile(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.onSurface,
+) {
+    Surface(modifier = modifier, color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(15.dp)) {
+        Column(Modifier.padding(12.dp)) {
+            Text(label, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(value, fontSize = 24.sp, fontWeight = FontWeight.Black, color = color)
+        }
     }
 }
 
@@ -758,6 +885,7 @@ private fun statusForTemperature(coolant: Double?): String = when {
 }
 
 private fun Double.oneDecimal(): String = String.format(Locale.US, "%.1f", this)
+private fun Double.money(): String = String.format(Locale.US, "%.2f", this)
 private fun Double.signedPercent(): String = String.format(Locale.US, "%+.1f%%", this)
 private fun Double.temperature(units: UnitSystem): String =
     if (units == UnitSystem.US) "${(this * 9 / 5 + 32).toInt()} °F" else "${toInt()} °C"
