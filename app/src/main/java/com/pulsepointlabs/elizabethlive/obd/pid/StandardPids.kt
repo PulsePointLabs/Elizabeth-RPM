@@ -28,6 +28,9 @@ object StandardPids {
         PidDefinition(1, 0x11, "Throttle position", "%", PollPriority.FAST) {
             it.firstOrNull()?.times(100.0)?.div(255.0)
         },
+        PidDefinition(1, 0x04, "Calculated engine load", "%", PollPriority.MEDIUM) {
+            it.firstOrNull()?.times(100.0)?.div(255.0)
+        },
         PidDefinition(1, 0x0B, "Manifold pressure", "kPa", PollPriority.FAST) {
             it.firstOrNull()?.toDouble()
         },
@@ -39,6 +42,9 @@ object StandardPids {
         },
         PidDefinition(1, 0x07, "Long-term fuel trim B1", "%", PollPriority.SLOW) {
             it.firstOrNull()?.let { a -> (a - 128.0) * 100.0 / 128.0 }
+        },
+        PidDefinition(1, 0x0E, "Ignition timing advance", "°", PollPriority.MEDIUM) {
+            it.firstOrNull()?.div(2.0)?.minus(64.0)
         },
         PidDefinition(1, 0x42, "Control-module voltage", "V", PollPriority.SLOW) {
             if (it.size >= 2) ((it[0] * 256) + it[1]) / 1000.0 else null

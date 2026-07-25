@@ -70,7 +70,9 @@ fun LandscapeDashboard(
     val sample = state.samples.lastOrNull()
     val units = state.settings.units
     val price = state.settings.fuelPricePerGallon
-    val tripCost = FuelCostCalculator.cost(state.liveFuelUsedLiters, price)
+    val tripCost = if (state.isSimulated || sample?.fuelRateLitersPerHour != null) {
+        FuelCostCalculator.cost(state.liveFuelUsedLiters, price)
+    } else null
     val durationSeconds = max(0L, (System.currentTimeMillis() - state.liveDriveStartedAtMillis) / 1_000L)
 
     Column(
@@ -137,7 +139,11 @@ private fun DashboardHeader(
                 )
                 Spacer(Modifier.width(7.dp))
                 Text(
-                    if (connected) "Connected · ${state.adapterName}" else "Demo · ${state.adapterName}",
+                    when {
+                        connected && state.isSimulated -> "Demo · simulated"
+                        connected -> "Live · ${state.adapterName}"
+                        else -> "Reconnecting · ${state.adapterName}"
+                    },
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
@@ -169,11 +175,11 @@ private fun DashboardHeader(
 @Composable
 private fun SpeedPanel(sample: TelemetrySample?, units: UnitSystem, modifier: Modifier = Modifier) {
     val speed = when (units) {
-        UnitSystem.US -> (sample?.speedKph ?: 0.0) * .621371
-        UnitSystem.METRIC -> sample?.speedKph ?: 0.0
+        UnitSystem.US -> sample?.speedKph?.times(.621371)
+        UnitSystem.METRIC -> sample?.speedKph
     }
     val maxSpeed = if (units == UnitSystem.US) 120.0 else 190.0
-    val speedProgress = (speed / maxSpeed).toFloat().coerceIn(0f, 1f)
+    val speedProgress = ((speed ?: 0.0) / maxSpeed).toFloat().coerceIn(0f, 1f)
     val speedSeverity = ((speedProgress - .42f) / .45f).coerceIn(0f, 1f)
     val speedColor = animatedStatusColor(speedSeverity)
     val throttleProgress = ((sample?.throttlePercent ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f)
@@ -193,7 +199,7 @@ private fun SpeedPanel(sample: TelemetrySample?, units: UnitSystem, modifier: Mo
                 SpeedArc(speedProgress, speedColor, Modifier.fillMaxSize())
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        speed.toInt().toString(),
+                        speed?.toInt()?.toString() ?: "—",
                         fontSize = 76.sp,
                         lineHeight = 76.sp,
                         fontWeight = FontWeight.Black,
@@ -211,7 +217,7 @@ private fun SpeedPanel(sample: TelemetrySample?, units: UnitSystem, modifier: Mo
             }
             MetricBarBox(
                 label = "THROTTLE",
-                value = "${sample?.throttlePercent?.toInt() ?: 0}%",
+                value = sample?.throttlePercent?.toInt()?.let { "$it%" } ?: "—",
                 progress = throttleProgress,
                 color = throttleColor,
             )
@@ -228,9 +234,9 @@ private fun CenterPanel(
 ) {
     val rpmProgress = ((sample?.rpm ?: 0.0) / 6_500.0).toFloat().coerceIn(0f, 1f)
     val rpmColor = animatedStatusColor(((rpmProgress - .45f) / .5f).coerceIn(0f, 1f))
-    val boostPsi = sample?.boostPsi ?: 0.0
-    val boostProgress = ((boostPsi + 12.0) / 30.0).toFloat().coerceIn(0f, 1f)
-    val boostLoad = (boostPsi.coerceAtLeast(0.0) / 18.0).toFloat().coerceIn(0f, 1f)
+    val boostPsi = sample?.boostPsi
+    val boostProgress = (((boostPsi ?: -12.0) + 12.0) / 30.0).toFloat().coerceIn(0f, 1f)
+    val boostLoad = ((boostPsi ?: 0.0).coerceAtLeast(0.0) / 18.0).toFloat().coerceIn(0f, 1f)
     val boostColor = animatedStatusColor(boostLoad)
 
     Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -241,7 +247,7 @@ private fun CenterPanel(
             ) {
                 PrimaryMetric(
                     label = "ENGINE RPM",
-                    value = "${sample?.rpm?.toInt() ?: 0}",
+                    value = sample?.rpm?.toInt()?.toString() ?: "—",
                     unit = "rpm",
                     progress = rpmProgress,
                     color = rpmColor,
@@ -250,9 +256,9 @@ private fun CenterPanel(
                 PrimaryMetric(
                     label = "CALCULATED BOOST / VACUUM",
                     value = if (units == UnitSystem.US) {
-                        boostPsi.oneDecimal()
+                        boostPsi?.oneDecimal() ?: "—"
                     } else {
-                        (boostPsi * 6.89476).oneDecimal()
+                        boostPsi?.times(6.89476)?.oneDecimal() ?: "—"
                     },
                     unit = if (units == UnitSystem.US) "psi" else "kPa",
                     progress = boostProgress,
@@ -290,7 +296,7 @@ private fun CenterPanel(
 private fun SupportingPanel(
     sample: TelemetrySample?,
     units: UnitSystem,
-    tripCost: Double,
+    tripCost: Double?,
     durationSeconds: Long,
     fuelPrice: Double,
     fuelUsedLiters: Double,
@@ -354,7 +360,7 @@ private fun SupportingPanel(
                     Column(Modifier.weight(1f)) {
                         Text("TRIP COST", fontSize = 13.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text(
-                            "$${tripCost.money()}",
+                            tripCost?.let { "$${it.money()}" } ?: "—",
                             fontSize = 31.sp,
                             lineHeight = 32.sp,
                             fontWeight = FontWeight.Black,

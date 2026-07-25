@@ -75,13 +75,13 @@ fun RollingTelemetryChart(
             }
             if (samples.size > 1) {
                 if ("RPM" in channels) drawSeries(samples, left, right, top, bottom, RpmBlue) {
-                    (it.rpm / 6_500.0).toFloat()
+                    it.rpm?.let { rpm -> (rpm / 6_500.0).toFloat() }
                 }
                 if ("Boost" in channels) drawSeries(samples, left, right, top, bottom, BoostTeal) {
-                    ((it.boostPsi + 12.0) / 30.0).toFloat()
+                    it.boostPsi?.let { boost -> ((boost + 12.0) / 30.0).toFloat() }
                 }
                 if ("Throttle" in channels) drawSeries(samples, left, right, top, bottom, ThrottleAmber) {
-                    (it.throttlePercent / 100.0).toFloat()
+                    it.throttlePercent?.let { throttle -> (throttle / 100.0).toFloat() }
                 }
             }
             inspected?.let { selected ->
@@ -103,14 +103,20 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSeries(
     top: Float,
     bottom: Float,
     color: Color,
-    value: (TelemetrySample) -> Float,
+    value: (TelemetrySample) -> Float?,
 ) {
     val path = Path()
+    var hasPreviousPoint = false
     samples.forEachIndexed { index, sample ->
         val x = left + (right - left) * index / max(1, samples.lastIndex).toFloat()
-        val normalized = value(sample).coerceIn(0f, 1f)
+        val normalized = value(sample)?.coerceIn(0f, 1f)
+        if (normalized == null) {
+            hasPreviousPoint = false
+            return@forEachIndexed
+        }
         val y = bottom - (bottom - top) * normalized
-        if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        if (!hasPreviousPoint) path.moveTo(x, y) else path.lineTo(x, y)
+        hasPreviousPoint = true
     }
     drawPath(path, color, style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round))
 }
@@ -171,7 +177,8 @@ fun VoltageSparkline(samples: List<TelemetrySample>, modifier: Modifier = Modifi
         val path = Path()
         points.forEachIndexed { index, sample ->
             val x = size.width * index / max(1, points.lastIndex).toFloat()
-            val normalized = ((sample.voltage - 9.5) / 5.5).toFloat().coerceIn(0f, 1f)
+            val voltage = sample.voltage ?: return@forEachIndexed
+            val normalized = ((voltage - 9.5) / 5.5).toFloat().coerceIn(0f, 1f)
             val y = size.height - size.height * normalized
             if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }

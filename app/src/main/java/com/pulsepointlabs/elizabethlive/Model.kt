@@ -21,18 +21,18 @@ enum class UnitSystem { US, METRIC }
 
 data class TelemetrySample(
     val timestampMillis: Long,
-    val rpm: Double,
-    val speedKph: Double,
-    val boostPsi: Double,
-    val throttlePercent: Double,
-    val coolantC: Double,
-    val intakeC: Double,
-    val shortFuelTrim: Double,
-    val longFuelTrim: Double,
-    val voltage: Double,
-    val engineLoad: Double,
-    val timingAdvance: Double,
-    val fuelRateLitersPerHour: Double,
+    val rpm: Double?,
+    val speedKph: Double?,
+    val boostPsi: Double?,
+    val throttlePercent: Double?,
+    val coolantC: Double?,
+    val intakeC: Double?,
+    val shortFuelTrim: Double?,
+    val longFuelTrim: Double?,
+    val voltage: Double?,
+    val engineLoad: Double?,
+    val timingAdvance: Double?,
+    val fuelRateLitersPerHour: Double?,
 )
 
 data class TripEvent(
@@ -76,13 +76,16 @@ data class AppSettings(
     val autoStartRecording: Boolean = false,
     val fuelPricePerGallon: Double = 4.00,
     val fuelPriceSource: String = "Example local price · edit before use",
+    val demoMode: Boolean = false,
 )
+
+data class PairedObdDevice(val name: String, val address: String)
 
 data class ElizabethUiState(
     val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
     val connectionDetail: String = "Ready to connect",
     val adapterName: String = "vLinker MC+",
-    val isSimulated: Boolean = true,
+    val isSimulated: Boolean = false,
     val scenario: DriveScenario = DriveScenario.CRUISE,
     val samples: List<TelemetrySample> = emptyList(),
     val selectedChannels: Set<String> = setOf("RPM", "Boost", "Throttle"),
@@ -91,6 +94,11 @@ data class ElizabethUiState(
     val inspectedSample: TelemetrySample? = null,
     val liveDriveStartedAtMillis: Long = System.currentTimeMillis(),
     val liveFuelUsedLiters: Double = 0.0,
+    val pairedDevices: List<PairedObdDevice> = emptyList(),
+    val showDevicePicker: Boolean = false,
+    val supportedPids: Set<Int> = emptySet(),
+    val protocolName: String? = null,
+    val lastConnectionError: String? = null,
     val trip: TripSummary = TripSummary(),
     val settings: AppSettings = AppSettings(),
 )

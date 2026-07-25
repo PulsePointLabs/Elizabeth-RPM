@@ -1,10 +1,14 @@
 package com.pulsepointlabs.elizabethlive
 
+import android.Manifest
 import android.content.res.Configuration
+import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.text.KeyboardOptions
@@ -33,6 +37,7 @@ import androidx.compose.material.icons.rounded.DirectionsCar
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.QueryStats
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -65,6 +70,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
@@ -72,6 +78,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.core.content.ContextCompat
 import com.pulsepointlabs.elizabethlive.ui.LandscapeDashboard
 import com.pulsepointlabs.elizabethlive.ui.components.DualTemperatureBars
 import com.pulsepointlabs.elizabethlive.ui.components.FuelTrimBalance
@@ -105,6 +112,24 @@ private data class Destination(val label: String, val icon: ImageVector)
 
 @Composable
 private fun ElizabethApp(state: ElizabethUiState, viewModel: ElizabethViewModel) {
+    val context = LocalContext.current
+    val bluetoothPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) viewModel.prepareConnection() else viewModel.onBluetoothPermissionDenied()
+    }
+    val onConnectionControl = {
+        if (state.connectionState != ConnectionState.DISCONNECTED || state.isSimulated) {
+            viewModel.disconnect()
+        } else if (
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            viewModel.prepareConnection()
+        } else {
+            bluetoothPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+    }
     val destinations = listOf(
         Destination("Live", Icons.Rounded.QueryStats),
         Destination("Trip", Icons.Rounded.DirectionsCar),
@@ -116,7 +141,11 @@ private fun ElizabethApp(state: ElizabethUiState, viewModel: ElizabethViewModel)
     LaunchedEffect(isLandscape) {
         if (!isLandscape) dashboardDismissed = false
     }
-    if (isLandscape && !dashboardDismissed) {
+    if (
+        isLandscape &&
+        !dashboardDismissed &&
+        (state.connectionState == ConnectionState.CONNECTED || state.samples.isNotEmpty())
+    ) {
         LandscapeDashboard(
             state = state,
             onExit = { dashboardDismissed = true },
@@ -152,7 +181,7 @@ private fun ElizabethApp(state: ElizabethUiState, viewModel: ElizabethViewModel)
                 .padding(padding)
                 .statusBarsPadding(),
         ) {
-            ConnectionHeader(state, viewModel::connect)
+            ConnectionHeader(state, onConnectionControl)
             if (isLandscape && dashboardDismissed) {
                 FilledTonalButton(
                     onClick = { dashboardDismissed = false },
@@ -168,6 +197,47 @@ private fun ElizabethApp(state: ElizabethUiState, viewModel: ElizabethViewModel)
             }
         }
     }
+    if (state.showDevicePicker) {
+        PairedDeviceDialog(
+            devices = state.pairedDevices,
+            onSelect = viewModel::selectDevice,
+            onDismiss = viewModel::dismissDevicePicker,
+        )
+    }
+}
+
+@Composable
+private fun PairedDeviceDialog(
+    devices: List<PairedObdDevice>,
+    onSelect: (PairedObdDevice) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Select paired OBD adapter", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Choose the vLinker MC+ already paired in Android Bluetooth settings.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                devices.forEach { device ->
+                    OutlinedButton(
+                        onClick = { onSelect(device) },
+                        modifier = Modifier.fillMaxWidth().height(58.dp),
+                    ) {
+                        Column(Modifier.fillMaxWidth()) {
+                            Text(device.name, fontWeight = FontWeight.Bold)
+                            Text(device.address, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }
 
 @Composable
@@ -246,6 +316,16 @@ private fun LiveScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
         contentPadding = androidx.compose.foundation.layout.PaddingValues(18.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        state.lastConnectionError?.let { message ->
+            item {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("Connection problem", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onErrorContainer)
+                        Text(message, color = MaterialTheme.colorScheme.onErrorContainer)
+                    }
+                }
+            }
+        }
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -305,7 +385,13 @@ private fun LiveScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
             }
         }
         item {
-            ScenarioSelector(state.scenario, viewModel::setScenario)
+            ScenarioSelector(
+                isActive = state.isSimulated,
+                selected = state.scenario,
+                onStart = viewModel::startDemoMode,
+                onStop = viewModel::stopDemoMode,
+                onSelect = viewModel::setScenario,
+            )
         }
         item {
             BoxWithConstraints {
@@ -372,8 +458,9 @@ private fun TemperatureCard(sample: TelemetrySample?, units: UnitSystem, modifie
 
 @Composable
 private fun FuelTrimCard(sample: TelemetrySample?, modifier: Modifier = Modifier) {
+    val hasTrim = sample?.shortFuelTrim != null || sample?.longFuelTrim != null
     val max = maxOf(kotlin.math.abs(sample?.shortFuelTrim ?: 0.0), kotlin.math.abs(sample?.longFuelTrim ?: 0.0))
-    MetricCard("Fuel trim", if (max < 10) "Within expected range" else "Review", modifier) {
+    MetricCard("Fuel trim", if (!hasTrim) "Not reported" else if (max < 10) "Within expected range" else "Review", modifier) {
         Row(Modifier.fillMaxWidth()) {
             MetricText("Short-term", sample?.shortFuelTrim?.signedPercent() ?: "—", Modifier.weight(1f))
             MetricText("Long-term", sample?.longFuelTrim?.signedPercent() ?: "—", Modifier.weight(1f))
@@ -387,8 +474,8 @@ private fun FuelTrimCard(sample: TelemetrySample?, modifier: Modifier = Modifier
 private fun ElectricalCard(samples: List<TelemetrySample>, sample: TelemetrySample?, modifier: Modifier = Modifier) {
     val status = when {
         sample == null -> "Waiting for data"
-        sample.voltage < 11.8 -> "Low"
-        sample.voltage > 15.0 -> "High"
+        sample.voltage?.let { it < 11.8 } == true -> "Low"
+        sample.voltage?.let { it > 15.0 } == true -> "High"
         else -> "Normal"
     }
     MetricCard("Electrical", status, modifier) {
@@ -426,22 +513,37 @@ private fun MetricText(label: String, value: String, modifier: Modifier = Modifi
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ScenarioSelector(selected: DriveScenario, onSelect: (DriveScenario) -> Unit) {
+private fun ScenarioSelector(
+    isActive: Boolean,
+    selected: DriveScenario,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    onSelect: (DriveScenario) -> Unit,
+) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = .45f))) {
         Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Demo Mode", fontWeight = FontWeight.Bold)
-                    Text("Simulated · ${selected.label}", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        if (isActive) "Simulated · ${selected.label}" else "Off · live adapter data only",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
-                SimulatedBadge()
+                if (isActive) {
+                    OutlinedButton(onClick = onStop) { Text("Stop demo") }
+                } else {
+                    Button(onClick = onStart) { Text("Start demo") }
+                }
             }
-            Spacer(Modifier.height(10.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                DriveScenario.entries.forEach {
-                    AssistChip(onClick = { onSelect(it) }, label = { Text(it.label) }, leadingIcon = {
-                        Box(Modifier.size(8.dp).clip(CircleShape).background(if (it == selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline))
-                    })
+            if (isActive) {
+                Spacer(Modifier.height(10.dp))
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    DriveScenario.entries.forEach {
+                        AssistChip(onClick = { onSelect(it) }, label = { Text(it.label) }, leadingIcon = {
+                            Box(Modifier.size(8.dp).clip(CircleShape).background(if (it == selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline))
+                        })
+                    }
                 }
             }
         }
@@ -451,7 +553,7 @@ private fun ScenarioSelector(selected: DriveScenario, onSelect: (DriveScenario) 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun TripScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
-    val trip = state.trip
+    val trip = if (state.isSimulated) state.trip else liveTripSummary(state)
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(18.dp),
@@ -481,10 +583,21 @@ private fun TripScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
         item {
             if (trip.isRecording) {
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
-                    Text("Recording trip · Demo data", Modifier.padding(16.dp), fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (state.isSimulated) "Recording trip · Demo data" else "Recording trip · Live OBD data",
+                        Modifier.padding(16.dp),
+                        fontWeight = FontWeight.SemiBold,
+                    )
                 }
-            } else {
+            } else if (state.isSimulated) {
                 SimulatedNotice("Showing a simulated recorded trip")
+            } else {
+                Card {
+                    Text(
+                        if (trip.startedAtMillis == null) "Start a trip to build a live summary." else "Live trip stopped · summary remains on this device session.",
+                        Modifier.padding(16.dp),
+                    )
+                }
             }
         }
         item {
@@ -529,10 +642,13 @@ private fun TripScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
         item {
             Text("Notable events", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         }
-        items(
-            if (trip.events.isEmpty()) sampleEvents() else trip.events,
-            key = { "${it.timestampMillis}-${it.label}" },
-        ) { event ->
+        val visibleEvents = if (state.isSimulated && trip.events.isEmpty()) sampleEvents() else trip.events
+        if (visibleEvents.isEmpty()) {
+            item {
+                Text("No notable live events recorded.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        items(visibleEvents, key = { "${it.timestampMillis}-${it.label}" }) { event ->
             EventRow(event)
         }
         item { Spacer(Modifier.height(8.dp)) }
@@ -555,6 +671,7 @@ private fun FuelCostSummaryCard(state: ElizabethUiState, viewModel: ElizabethVie
     )
     val totals = FuelCostCalculator.aggregate(demoHistory, settings.fuelPricePerGallon)
     val liveCost = FuelCostCalculator.cost(state.liveFuelUsedLiters, settings.fuelPricePerGallon)
+    val hasLiveFuelRate = state.isSimulated || state.samples.lastOrNull()?.fuelRateLitersPerHour != null
     ElevatedCard(shape = RoundedCornerShape(22.dp)) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -566,24 +683,37 @@ private fun FuelCostSummaryCard(state: ElizabethUiState, viewModel: ElizabethVie
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
-                SimulatedBadge()
+                if (state.isSimulated) SimulatedBadge()
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                CostTile("Current trip", "$${liveCost.money()}", Modifier.weight(1f), GoodGreen)
-                CostTile("Recorded trip", "$${FuelCostCalculator.cost(state.trip.fuelUsedLiters, settings.fuelPricePerGallon).money()}", Modifier.weight(1f), BoostTeal)
+                CostTile("Current trip", if (hasLiveFuelRate) "$${liveCost.money()}" else "—", Modifier.weight(1f), GoodGreen)
+                CostTile(
+                    if (state.isSimulated) "Demo recorded trip" else "Fuel-rate status",
+                    if (state.isSimulated) {
+                        "$${FuelCostCalculator.cost(state.trip.fuelUsedLiters, settings.fuelPricePerGallon).money()}"
+                    } else if (hasLiveFuelRate) {
+                        "Measured"
+                    } else {
+                        "Not reported"
+                    },
+                    Modifier.weight(1f),
+                    BoostTeal,
+                )
             }
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                maxItemsInEachRow = 3,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                CostTile("Today", "$${totals.today.money()}", Modifier.width(105.dp))
-                CostTile("This week", "$${totals.thisWeek.money()}", Modifier.width(105.dp))
-                CostTile("This month", "$${totals.thisMonth.money()}", Modifier.width(105.dp))
+            if (state.isSimulated) {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    maxItemsInEachRow = 3,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    CostTile("Today", "$${totals.today.money()}", Modifier.width(105.dp))
+                    CostTile("This week", "$${totals.thisWeek.money()}", Modifier.width(105.dp))
+                    CostTile("This month", "$${totals.thisMonth.money()}", Modifier.width(105.dp))
+                }
             }
             Text(
                 "Set your local regular-gas price",
@@ -608,7 +738,7 @@ private fun FuelCostSummaryCard(state: ElizabethUiState, viewModel: ElizabethVie
                 }
             }
             Text(
-                "Costs use reported fuel rate when available. Demo history is simulated; unsupported live fuel rate will never be shown as a measured cost.",
+                "Costs use reported fuel rate when available. Unsupported live fuel rate is shown as unavailable, never replaced with demo data.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -697,12 +827,32 @@ private fun EventRow(event: TripEvent) {
 private fun HealthScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
     val latest = state.samples.lastOrNull()
     val healthItems = listOf(
-        HealthItem("Diagnostic trouble codes", "No trouble codes reported.", HealthStatus.GOOD),
-        HealthItem("Emissions readiness", "7 of 7 reported monitors are ready.", HealthStatus.GOOD),
-        HealthItem("Control-module voltage", if ((latest?.voltage ?: 14.0) < 11.8) "Voltage was low during engine start." else "Voltage is within the expected range.", HealthStatus.GOOD),
-        HealthItem("Coolant temperature", "Coolant temperature is in the normal operating range.", HealthStatus.GOOD),
-        HealthItem("Intake temperature", if ((latest?.intakeC ?: 30.0) > 55) "Intake air is unusually warm after heat-soak." else "Intake-air temperature is reasonable.", HealthStatus.GOOD),
-        HealthItem("Long-term fuel trim", "Long-term fuel trim is within the expected range.", HealthStatus.GOOD),
+        HealthItem("Diagnostic trouble codes", "Not checked yet in this build.", HealthStatus.NOTICE),
+        HealthItem("Emissions readiness", "Not checked yet in this build.", HealthStatus.NOTICE),
+        HealthItem(
+            "Control-module voltage",
+            latest?.voltage?.let { if (it < 11.8) "Voltage is low." else "Voltage is within the expected range." }
+                ?: "This parameter has not been reported.",
+            if (latest?.voltage == null) HealthStatus.UNSUPPORTED else HealthStatus.GOOD,
+        ),
+        HealthItem(
+            "Coolant temperature",
+            latest?.coolantC?.let { "Coolant is ${statusForTemperature(it).lowercase()} at ${it.temperature(state.settings.units)}." }
+                ?: "This parameter has not been reported.",
+            if (latest?.coolantC == null) HealthStatus.UNSUPPORTED else HealthStatus.GOOD,
+        ),
+        HealthItem(
+            "Intake temperature",
+            latest?.intakeC?.let { if (it > 55) "Intake air is unusually warm." else "Intake-air temperature is reasonable." }
+                ?: "This parameter has not been reported.",
+            if (latest?.intakeC == null) HealthStatus.UNSUPPORTED else HealthStatus.GOOD,
+        ),
+        HealthItem(
+            "Long-term fuel trim",
+            latest?.longFuelTrim?.let { "Long-term fuel trim is ${it.signedPercent()}." }
+                ?: "This parameter has not been reported.",
+            if (latest?.longFuelTrim == null) HealthStatus.UNSUPPORTED else HealthStatus.GOOD,
+        ),
         HealthItem("CVT fluid temperature", "This parameter is not reported by Elizabeth.", HealthStatus.UNSUPPORTED),
     )
     LazyColumn(
@@ -714,8 +864,8 @@ private fun HealthScreen(state: ElizabethUiState, viewModel: ElizabethViewModel)
             Text("Health", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Text("Plain-English vehicle and adapter status", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        item {
-            SimulatedNotice("Health results are simulated until a real adapter scan completes")
+        if (state.isSimulated) {
+            item { SimulatedNotice("Health results are simulated in Demo Mode") }
         }
         item {
             ElevatedCard(shape = RoundedCornerShape(22.dp)) {
@@ -724,10 +874,20 @@ private fun HealthScreen(state: ElizabethUiState, viewModel: ElizabethViewModel)
                     DetailRow("Vehicle", "Elizabeth · 2021 Honda Accord EX-L")
                     DetailRow("Engine", "1.5T · CVT")
                     DetailRow("Adapter", "vLinker MC+")
-                    DetailRow("Protocol", "Automatic · awaiting live connection")
-                    DetailRow("VIN", "Hidden in Demo Mode")
-                    DetailRow("Supported PID scan", "14 standard parameters simulated")
-                    DetailRow("Last successful connection", "Demo Mode · just now")
+                    DetailRow("Protocol", state.protocolName ?: "Awaiting live connection")
+                    DetailRow("VIN", "Not queried yet")
+                    DetailRow(
+                        "Supported PID scan",
+                        if (state.supportedPids.isEmpty()) "Not completed" else "${state.supportedPids.size} PIDs reported by ECU",
+                    )
+                    DetailRow(
+                        "Connection",
+                        when {
+                            state.isSimulated -> "Demo Mode · simulated"
+                            state.connectionState == ConnectionState.CONNECTED -> "Live · ${state.adapterName}"
+                            else -> "Disconnected"
+                        },
+                    )
                     DetailRow("Last recorded trip", "Today · 24 min 47 sec")
                 }
             }
@@ -793,7 +953,7 @@ private fun SettingsCard(settings: AppSettings, viewModel: ElizabethViewModel) {
                 Text(if (settings.autoStartRecording) "Turn auto-start off" else "Turn auto-start on")
             }
             DetailRow("Connection device", "vLinker MC+")
-            DetailRow("Demo Mode", "On · always labeled")
+            DetailRow("Demo Mode", if (settings.demoMode) "On · simulated" else "Off · live data only")
             OutlinedButton(onClick = { }, modifier = Modifier.fillMaxWidth().height(48.dp)) {
                 Text("Export all local data")
             }
@@ -891,6 +1051,60 @@ private fun Double.temperature(units: UnitSystem): String =
     if (units == UnitSystem.US) "${(this * 9 / 5 + 32).toInt()} °F" else "${toInt()} °C"
 private fun speedText(kph: Double, units: UnitSystem): String =
     if (units == UnitSystem.US) "${(kph * .621371).toInt()} mph" else "${kph.toInt()} km/h"
+
+private fun liveTripSummary(state: ElizabethUiState): TripSummary {
+    val startedAt = state.trip.startedAtMillis ?: return TripSummary(
+        isRecording = false,
+        startedAtMillis = null,
+        durationSeconds = 0,
+        distanceKm = 0.0,
+        averageSpeedKph = 0.0,
+        maximumSpeedKph = 0.0,
+        averageRpm = 0.0,
+        maximumRpm = 0.0,
+        maximumBoostPsi = 0.0,
+        coolantRangeC = 0.0..0.0,
+        intakeRangeC = 0.0..0.0,
+        averageThrottle = 0.0,
+        fuelTrimRange = 0.0..0.0,
+        minimumVoltage = 0.0,
+        fuelUsedLiters = 0.0,
+        events = emptyList(),
+    )
+    val samples = state.samples.filter { it.timestampMillis >= startedAt }
+    fun List<Double>.averageOrZero() = if (isEmpty()) 0.0 else average()
+    fun List<Double>.maxOrZero() = maxOrNull() ?: 0.0
+    fun List<Double>.rangeOrZero(): ClosedFloatingPointRange<Double> =
+        if (isEmpty()) 0.0..0.0 else (minOrNull() ?: 0.0)..(maxOrNull() ?: 0.0)
+    val speeds = samples.mapNotNull { it.speedKph }
+    val rpms = samples.mapNotNull { it.rpm }
+    val boost = samples.mapNotNull { it.boostPsi }
+    val coolant = samples.mapNotNull { it.coolantC }
+    val intake = samples.mapNotNull { it.intakeC }
+    val throttle = samples.mapNotNull { it.throttlePercent }
+    val trims = samples.flatMap { listOfNotNull(it.shortFuelTrim, it.longFuelTrim) }
+    val voltage = samples.mapNotNull { it.voltage }
+    val distance = samples.zipWithNext().sumOf { (first, second) ->
+        val speed = first.speedKph ?: second.speedKph ?: 0.0
+        speed * ((second.timestampMillis - first.timestampMillis).coerceAtLeast(0L) / 3_600_000.0)
+    }
+    val end = if (state.trip.isRecording) System.currentTimeMillis() else samples.lastOrNull()?.timestampMillis ?: startedAt
+    return state.trip.copy(
+        durationSeconds = ((end - startedAt).coerceAtLeast(0L) / 1_000L),
+        distanceKm = distance,
+        averageSpeedKph = speeds.averageOrZero(),
+        maximumSpeedKph = speeds.maxOrZero(),
+        averageRpm = rpms.averageOrZero(),
+        maximumRpm = rpms.maxOrZero(),
+        maximumBoostPsi = boost.maxOrZero(),
+        coolantRangeC = coolant.rangeOrZero(),
+        intakeRangeC = intake.rangeOrZero(),
+        averageThrottle = throttle.averageOrZero(),
+        fuelTrimRange = trims.rangeOrZero(),
+        minimumVoltage = voltage.minOrNull() ?: 0.0,
+        fuelUsedLiters = state.liveFuelUsedLiters,
+    )
+}
 
 private fun sampleEvents() = listOf(
     TripEvent(268_000, "Hard acceleration", "Throttle 84% · 3,980 rpm"),
