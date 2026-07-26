@@ -47,6 +47,13 @@ The header introduces itself briefly, auto-hides, and returns with a downward pu
 edge; the small top-edge grabber remains visible. The calculated boost/vacuum label now uses two
 clear lines instead of truncating.
 
+Version 0.5.0 adds a functional Android Auto surface using the Android for Cars App Library. The
+car host displays four stable, colored instruments for engine RPM, calculated boost/vacuum,
+coolant temperature, and control-module voltage. Values refresh from the same application-scoped
+Bluetooth/ELM327 session used by the phone, and the car screen can reconnect to the last adapter,
+start or stop a trip, and disconnect. Android Auto controls the final typography and layout; its
+template system does not permit Elizabeth Live to draw the phone dashboard's custom Canvas gauges.
+
 ## Build
 
 1. Install Android Studio with Android SDK 36 and JDK 17.

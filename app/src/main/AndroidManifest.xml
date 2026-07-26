@@ -9,6 +9,7 @@
         android:maxSdkVersion="30" />
 
     <application
+        android:name=".ElizabethApplication"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@drawable/ic_elizabeth"
@@ -17,6 +18,25 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.ElizabethLive"
         android:usesCleartextTraffic="false">
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+        <meta-data
+            android:name="androidx.car.app.minCarApiLevel"
+            android:value="1" />
+
+        <service
+            android:name=".auto.ElizabethCarAppService"
+            android:exported="true"
+            android:icon="@drawable/ic_elizabeth"
+            android:intentMatchingFlags="allowNullAction"
+            android:label="@string/car_app_name">
+            <intent-filter>
+                <action android:name="androidx.car.app.CarAppService" />
+                <category android:name="androidx.car.app.category.IOT" />
+            </intent-filter>
+        </service>
+
         <activity
             android:name=".MainActivity"
             android:exported="true">

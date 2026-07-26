@@ -870,6 +870,7 @@ private fun SettingsCard(settings: AppSettings, viewModel: ElizabethViewModel) {
                 Text(if (settings.autoStartRecording) "Turn auto-start off" else "Turn auto-start on")
             }
             DetailRow("Connection device", "vLinker MC+")
+            DetailRow("Android Auto", "Four live gauges · RPM, boost, coolant, voltage")
             OutlinedButton(onClick = { }, modifier = Modifier.fillMaxWidth().height(48.dp)) {
                 Text("Export all local data")
             }
