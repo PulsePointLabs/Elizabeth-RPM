@@ -6,6 +6,8 @@ import com.pulsepointlabs.elizabethlive.obd.transport.ObdTransport
 import com.pulsepointlabs.elizabethlive.obd.transport.TransportResult
 import kotlinx.coroutines.delay
 import com.pulsepointlabs.elizabethlive.ReadinessMonitor
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 data class ElmInitialization(
     val supportedPids: Set<Int>,
@@ -31,6 +33,12 @@ data class ElmVehicleDiagnostics(
 )
 
 class Elm327Client(private val transport: ObdTransport) {
+    private val operationMutex = Mutex()
+    private val pidRoutes = mutableMapOf<Int, CanRoute>()
+    private val unavailablePids = mutableSetOf<Int>()
+    private var currentRoute: CanRoute? = null
+    private var uses29BitCan = false
+
     suspend fun initialize(onStatus: (String) -> Unit): Result<ElmInitialization> = runCatching {
         val sequence = listOf(
             InitCommand("ATZ", "Resetting ELM327…", 5_000),
@@ -53,18 +61,18 @@ class Elm327Client(private val transport: ObdTransport) {
             else -> "Automatic"
         }
         val protocolName = protocol.ifBlank { "Automatic" }
-        if (protocolName.contains("29/500", ignoreCase = true)) {
+        uses29BitCan = protocolName.contains("29/500", ignoreCase = true)
+        pidRoutes.clear()
+        unavailablePids.clear()
+        currentRoute = null
+        if (uses29BitCan) {
             onStatus("Targeting the 29-bit engine ECU…")
-            // Physical ISO 15765 addressing for engine ECU 0x10:
-            // request 18 DA 10 F1, accept replies from 18 DA F1 10.
-            requireSuccessful("ATCP18", 2_000)
-            requireSuccessful("ATSHDA10F1", 2_000)
-            requireSuccessful("ATCRA18DAF110", 2_000)
+            configureRoute(CanRoute.Physical(0x10))
         }
         ElmInitialization(
             supportedPids = supported,
-            protocolName = if (protocolName.contains("29/500", ignoreCase = true)) {
-                "$protocolName · PCM 10"
+            protocolName = if (uses29BitCan) {
+                "$protocolName · adaptive PCM routing"
             } else {
                 protocolName
             },
@@ -75,8 +83,85 @@ class Elm327Client(private val transport: ObdTransport) {
         readObserved(definition).map(PidReadObservation::value)
 
     suspend fun readObserved(definition: PidDefinition): Result<PidReadObservation> = runCatching {
+        operationMutex.withLock {
+            readObservedLocked(definition)
+        }
+    }
+
+    private suspend fun readObservedLocked(definition: PidDefinition): PidReadObservation {
         val command = "%02X%02X".format(definition.mode, definition.pid)
-        when (val response = sendWithRetry(command, 2_500, retries = 1)) {
+        if (!uses29BitCan) {
+            return decodeObservation(
+                definition = definition,
+                command = command,
+                response = sendWithRetry(command, 2_500, retries = 1),
+            )
+        }
+
+        val cachedRoute = pidRoutes[definition.pid]
+        if (cachedRoute != null) {
+            configureRoute(cachedRoute)
+            return decodeObservation(
+                definition = definition,
+                command = command,
+                response = sendWithRetry(command, 2_500, retries = 1),
+                routeLabel = cachedRoute.label,
+            )
+        }
+
+        configureRoute(DEFAULT_PCM_ROUTE)
+        val pcmObservation = decodeObservation(
+            definition = definition,
+            command = command,
+            response = sendWithRetry(command, 2_500, retries = 1),
+        )
+        if (pcmObservation.status != PidReadStatus.NO_DATA || definition.pid in unavailablePids) {
+            if (pcmObservation.status == PidReadStatus.VALUE) {
+                pidRoutes[definition.pid] = DEFAULT_PCM_ROUTE
+            }
+            return pcmObservation
+        }
+
+        /*
+         * A functional support scan can merge replies from several ECUs. Do not assume that every
+         * reported PID is served by physical target 0x10. Probe the standard functional address,
+         * then other normal ISO-TP ECU targets. This remains strictly read-only Mode 01 traffic.
+         */
+        val fallbackRoutes = buildList {
+            add(CanRoute.Functional)
+            for (target in 0x11..0x1F) add(CanRoute.Physical(target))
+        }
+        for (route in fallbackRoutes) {
+            configureRoute(route)
+            val observation = decodeObservation(
+                definition = definition,
+                command = command,
+                response = sendWithRetry(command, ROUTE_PROBE_TIMEOUT_MILLIS, retries = 0),
+                routeLabel = route.label,
+            )
+            if (observation.status == PidReadStatus.VALUE) {
+                pidRoutes[definition.pid] = route
+                return observation
+            }
+            if (observation.status !in setOf(PidReadStatus.NO_DATA, PidReadStatus.PARSE_FAILED)) {
+                return observation
+            }
+        }
+
+        unavailablePids += definition.pid
+        configureRoute(DEFAULT_PCM_ROUTE)
+        return pcmObservation.copy(
+            response = "NO DATA · tried PCM 10, functional OBD, and ECU targets 11–1F",
+        )
+    }
+
+    private fun decodeObservation(
+        definition: PidDefinition,
+        command: String,
+        response: TransportResult,
+        routeLabel: String? = null,
+    ): PidReadObservation =
+        when (response) {
             is TransportResult.Response -> {
                 val payload = Elm327ResponseParser.payloadFor(
                     response.raw,
@@ -88,7 +173,7 @@ class Elm327Client(private val transport: ObdTransport) {
                     PidReadObservation(
                         value = null,
                         status = PidReadStatus.PARSE_FAILED,
-                        response = sanitizeForDiagnostic(response.raw),
+                        response = labeledResponse(routeLabel, response.raw),
                     )
                 } else {
                     val value = definition.decoder(payload)
@@ -99,7 +184,7 @@ class Elm327Client(private val transport: ObdTransport) {
                         } else {
                             PidReadStatus.VALUE
                         },
-                        response = sanitizeForDiagnostic(response.raw),
+                        response = labeledResponse(routeLabel, response.raw),
                     )
                 }
             }
@@ -109,6 +194,14 @@ class Elm327Client(private val transport: ObdTransport) {
                 response = "NO DATA",
             )
             is TransportResult.Failure -> error(response.message)
+        }
+
+    private fun labeledResponse(routeLabel: String?, raw: String): String {
+        val sanitized = sanitizeForDiagnostic(raw)
+        return if (routeLabel == null || routeLabel == DEFAULT_PCM_ROUTE.label) {
+            sanitized
+        } else {
+            "$routeLabel · $sanitized"
         }
     }
 
@@ -121,6 +214,15 @@ class Elm327Client(private val transport: ObdTransport) {
     suspend fun readVehicleDiagnostics(
         onStatus: (String) -> Unit = {},
     ): Result<ElmVehicleDiagnostics> = runCatching {
+        operationMutex.withLock {
+            readVehicleDiagnosticsLocked(onStatus)
+        }
+    }
+
+    private suspend fun readVehicleDiagnosticsLocked(
+        onStatus: (String) -> Unit,
+    ): ElmVehicleDiagnostics {
+        if (uses29BitCan) configureRoute(DEFAULT_PCM_ROUTE)
         onStatus("Reading vehicle identification…")
         val vin = optionalResponse("0902", 5_000)?.let(::parseVin)
 
@@ -144,7 +246,7 @@ class Elm327Client(private val transport: ObdTransport) {
             parseDtcs(it, 0x42).isNotEmpty()
         }
 
-        ElmVehicleDiagnostics(
+        return ElmVehicleDiagnostics(
             vin = vin,
             storedDtcs = stored,
             pendingDtcs = pending,
@@ -153,6 +255,24 @@ class Elm327Client(private val transport: ObdTransport) {
             milOn = readiness?.milOn,
             freezeFrameAvailable = freezeFrame,
         )
+    }
+
+    private suspend fun configureRoute(route: CanRoute) {
+        if (!uses29BitCan || currentRoute == route) return
+        requireSuccessful("ATCP18", 2_000)
+        when (route) {
+            CanRoute.Functional -> {
+                // With no argument, CRA restores the adapter's automatic receive filtering.
+                requireSuccessful("ATCRA", 2_000)
+                requireSuccessful("ATSHDB33F1", 2_000)
+            }
+            is CanRoute.Physical -> {
+                val target = "%02X".format(route.target)
+                requireSuccessful("ATSHDA${target}F1", 2_000)
+                requireSuccessful("ATCRA18DAF1$target", 2_000)
+            }
+        }
+        currentRoute = route
     }
 
     private suspend fun optionalResponse(command: String, timeoutMillis: Long): String? =
@@ -323,4 +443,21 @@ class Elm327Client(private val transport: ObdTransport) {
         val status: String,
         val timeoutMillis: Long,
     )
+
+    private sealed interface CanRoute {
+        val label: String
+
+        data object Functional : CanRoute {
+            override val label: String = "Functional OBD"
+        }
+
+        data class Physical(val target: Int) : CanRoute {
+            override val label: String = "ECU ${"%02X".format(target)}"
+        }
+    }
+
+    private companion object {
+        val DEFAULT_PCM_ROUTE = CanRoute.Physical(0x10)
+        const val ROUTE_PROBE_TIMEOUT_MILLIS = 2_500L
+    }
 }

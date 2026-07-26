@@ -79,10 +79,54 @@ class Elm327ClientTest {
 
         val result = Elm327Client(transport).initialize { }.getOrThrow()
 
-        assertTrue(result.protocolName.endsWith("PCM 10"))
+        assertTrue(result.protocolName.endsWith("adaptive PCM routing"))
         assertTrue("ATCP18" in transport.commands)
         assertTrue("ATSHDA10F1" in transport.commands)
         assertTrue("ATCRA18DAF110" in transport.commands)
+    }
+
+    @Test
+    fun `29 bit PID read falls back to the functional address and caches it`() = runTest {
+        val transport = RoutingTransport { command, header ->
+            when {
+                command == "0105" && header == "ATSHDB33F1" ->
+                    TransportResult.Response("41 05 7B\r>")
+                command == "0105" -> TransportResult.NoData
+                else -> null
+            }
+        }
+        val client = Elm327Client(transport)
+        client.initialize { }.getOrThrow()
+        val coolant = StandardPids.registry.first { it.pid == 0x05 }
+
+        val first = client.readObserved(coolant).getOrThrow()
+        val second = client.readObserved(coolant).getOrThrow()
+
+        assertEquals(83.0, first.value!!, 0.001)
+        assertTrue(first.response.startsWith("Functional OBD"))
+        assertEquals(1, transport.commands.count { it == "ATSHDB33F1" })
+        assertEquals(PidReadStatus.VALUE, second.status)
+    }
+
+    @Test
+    fun `29 bit PID read can discover a different physical ECU target`() = runTest {
+        val transport = RoutingTransport { command, header ->
+            when {
+                command == "010F" && header == "ATSHDA11F1" ->
+                    TransportResult.Response("41 0F 4A\r>")
+                command == "010F" -> TransportResult.NoData
+                else -> null
+            }
+        }
+        val client = Elm327Client(transport)
+        client.initialize { }.getOrThrow()
+        val intake = StandardPids.registry.first { it.pid == 0x0F }
+
+        val observation = client.readObserved(intake).getOrThrow()
+
+        assertEquals(34.0, observation.value!!, 0.001)
+        assertTrue(observation.response.startsWith("ECU 11"))
+        assertTrue("ATCRA18DAF111" in transport.commands)
     }
 
     @Test
@@ -171,6 +215,37 @@ class Elm327ClientTest {
             return responses[command]?.let(TransportResult::Response)
                 ?: TransportResult.Failure("Unexpected command: $command", false)
         }
+        override suspend fun disconnect() {
+            mutableState.value = TransportState.DISCONNECTED
+        }
+    }
+
+    private class RoutingTransport(
+        private val liveResponse: (command: String, header: String?) -> TransportResult?,
+    ) : ObdTransport {
+        val commands = mutableListOf<String>()
+        private val mutableState = MutableStateFlow(TransportState.CONNECTED)
+        override val state: StateFlow<TransportState> = mutableState
+        private var header: String? = null
+
+        override suspend fun connect(deviceAddress: String): Result<Unit> = Result.success(Unit)
+
+        override suspend fun send(command: String, timeoutMillis: Long): TransportResult {
+            commands += command
+            if (command.startsWith("ATSH")) header = command
+            liveResponse(command, header)?.let { return it }
+            return when (command) {
+                "ATZ" -> TransportResult.Response("ELM327 v2.3\r>")
+                "ATE0", "ATL0", "ATS0", "ATH0", "ATSP0",
+                "ATCP18", "ATCRA", "ATSHDB33F1",
+                "ATSHDA10F1", "ATCRA18DAF110",
+                "ATSHDA11F1", "ATCRA18DAF111" -> TransportResult.Response("OK\r>")
+                "0100" -> TransportResult.Response("41 00 00 18 00 00\r>")
+                "ATDP" -> TransportResult.Response("AUTO, ISO 15765-4 (CAN 29/500)\r>")
+                else -> TransportResult.Failure("Unexpected command: $command", false)
+            }
+        }
+
         override suspend fun disconnect() {
             mutableState.value = TransportState.DISCONNECTED
         }
