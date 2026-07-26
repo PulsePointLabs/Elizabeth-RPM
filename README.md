@@ -42,6 +42,11 @@ health results. Landscape now uses a conventional 270-degree tachometer with tic
 and a large RPM readout, plus a cleaner digital speed instrument and segmented load display.
 Rounded status instruments and continuous green-to-amber-to-red transitions remain.
 
+Version 0.4.1 gives the landscape dashboard the full display by overlaying its control header.
+The header introduces itself briefly, auto-hides, and returns with a downward pull from the top
+edge; the small top-edge grabber remains visible. The calculated boost/vacuum label now uses two
+clear lines instead of truncating.
+
 ## Build
 
 1. Install Android Studio with Android SDK 36 and JDK 17.

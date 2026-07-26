@@ -2,11 +2,18 @@ package com.pulsepointlabs.elizabethlive.ui
 
 import android.app.Activity
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,7 +37,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -40,6 +51,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -61,6 +73,7 @@ import com.pulsepointlabs.elizabethlive.ui.theme.RpmBlue
 import com.pulsepointlabs.elizabethlive.ui.theme.ThrottleAmber
 import com.pulsepointlabs.elizabethlive.ui.theme.WarningRed
 import java.util.Locale
+import kotlinx.coroutines.delay
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.max
@@ -83,17 +96,22 @@ fun LandscapeDashboard(
         FuelCostCalculator.cost(state.liveFuelUsedLiters, price)
     } else null
     val durationSeconds = max(0L, (System.currentTimeMillis() - state.liveDriveStartedAtMillis) / 1_000L)
+    var menuVisible by rememberSaveable { mutableStateOf(true) }
 
-    Column(
+    LaunchedEffect(menuVisible) {
+        if (menuVisible) {
+            delay(4_500)
+            menuVisible = false
+        }
+    }
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .padding(6.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        DashboardHeader(state, onExit, onToggleTrip, onConnectionControl)
         Row(
-            modifier = Modifier.fillMaxWidth().weight(1f),
+            modifier = Modifier.fillMaxSize().padding(6.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             SpeedPanel(sample, units, Modifier.weight(.27f).fillMaxHeight())
@@ -108,6 +126,62 @@ fun LandscapeDashboard(
                 modifier = Modifier.weight(.28f).fillMaxHeight(),
             )
         }
+        Box(
+            Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .height(52.dp)
+                .pointerInput(Unit) {
+                    var downwardDrag = 0f
+                    detectVerticalDragGestures(
+                        onVerticalDrag = { _, dragAmount ->
+                            if (dragAmount > 0f) downwardDrag += dragAmount
+                            if (downwardDrag > 28f) menuVisible = true
+                        },
+                        onDragEnd = { downwardDrag = 0f },
+                        onDragCancel = { downwardDrag = 0f },
+                    )
+                }
+        )
+        if (!menuVisible) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .width(96.dp)
+                    .height(32.dp)
+                    .clickable { menuVisible = true },
+                contentAlignment = Alignment.TopCenter,
+            ) {
+                Box(
+                    Modifier
+                        .padding(top = 3.dp)
+                        .width(76.dp)
+                        .height(5.dp)
+                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .55f), CircleShape)
+                )
+            }
+        }
+        AnimatedVisibility(
+            visible = menuVisible,
+            modifier = Modifier.align(Alignment.TopCenter),
+            enter = slideInVertically { -it } + fadeIn(),
+            exit = slideOutVertically { -it } + fadeOut(),
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = .98f),
+                shape = RoundedCornerShape(bottomStart = 18.dp, bottomEnd = 18.dp),
+                shadowElevation = 10.dp,
+            ) {
+                DashboardHeader(
+                    state = state,
+                    onExit = onExit,
+                    onToggleTrip = onToggleTrip,
+                    onConnectionControl = onConnectionControl,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                )
+            }
+        }
     }
 }
 
@@ -117,10 +191,11 @@ private fun DashboardHeader(
     onExit: () -> Unit,
     onToggleTrip: () -> Unit,
     onConnectionControl: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val connected = state.connectionState == ConnectionState.CONNECTED
     Row(
-        modifier = Modifier.fillMaxWidth().height(42.dp),
+        modifier = modifier.fillMaxWidth().height(42.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -278,7 +353,7 @@ private fun CenterPanel(
                     modifier = Modifier.weight(.52f).fillMaxHeight(),
                 )
                 PrimaryMetric(
-                    label = "CALCULATED BOOST / VACUUM",
+                    label = "CALCULATED\nBOOST / VACUUM",
                     value = if (units == UnitSystem.US) {
                         boostPsi?.oneDecimal() ?: "—"
                     } else {
@@ -425,8 +500,9 @@ private fun PrimaryMetric(
             fontSize = 13.sp,
             fontWeight = FontWeight.Black,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+            lineHeight = 13.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Clip,
         )
         Row(verticalAlignment = Alignment.Bottom) {
             Text(
