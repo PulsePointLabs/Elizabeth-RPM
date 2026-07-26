@@ -60,6 +60,11 @@ the app can clearly label and use a standard MAF-based estimate. The tachometer 
 label below the live value and adds visible average and maximum RPM markers. Supported-PID
 discovery also merges replies from multiple ECUs instead of trusting only the first bitmap.
 
+Version 0.6.1 treats the supported-PID bitmap as a hint instead of a gate. The live poller directly
+probes only the curated dashboard registry at its fast, medium, and slow rates, then confirms every
+PID that returns a real value. This recovers standard sensors that an adapter or ECU omitted from
+its bitmap without continuously polling a giant PID list.
+
 ## Build
 
 1. Install Android Studio with Android SDK 36 and JDK 17.

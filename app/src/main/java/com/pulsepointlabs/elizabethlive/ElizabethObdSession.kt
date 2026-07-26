@@ -212,16 +212,22 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                     liveDistanceKm = if (reconnecting) it.liveDistanceKm else 0.0,
                 )
             }
-            startPolling(result.supportedPids)
+            startPolling()
         }
     }
 
-    private fun startPolling(supported: Set<Int>) {
+    private fun startPolling() {
         pollingJob?.cancel()
         pollingJob = scope.launch {
-            val fast = StandardPids.registry.filter { it.priority == PollPriority.FAST && it.pid in supported }
-            val medium = StandardPids.registry.filter { it.priority == PollPriority.MEDIUM && it.pid in supported }
-            val slow = StandardPids.registry.filter { it.priority == PollPriority.SLOW && it.pid in supported }
+            /*
+             * The Mode 01 support bitmap is useful guidance, but some vehicles/adapters return an
+             * incomplete bitmap even though direct requests succeed. Probe only our small curated
+             * registry at its assigned rate and promote every successful reply into supportedPids.
+             * This avoids both blank real sensors and the "poll everything" behavior we do not want.
+             */
+            val fast = StandardPids.registry.filter { it.priority == PollPriority.FAST }
+            val medium = StandardPids.registry.filter { it.priority == PollPriority.MEDIUM }
+            val slow = StandardPids.registry.filter { it.priority == PollPriority.SLOW }
             val values = mutableMapOf<Int, Double>()
             var cycle = 0
             var mediumIndex = 0
@@ -248,7 +254,16 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                         }
                     } else {
                         consecutiveFailures = 0
-                        result.getOrNull()?.let { values[definition.pid] = it }
+                        result.getOrNull()?.let { value ->
+                            values[definition.pid] = value
+                            mutableState.update {
+                                if (definition.pid in it.supportedPids) {
+                                    it
+                                } else {
+                                    it.copy(supportedPids = it.supportedPids + definition.pid)
+                                }
+                            }
+                        }
                     }
                     delay(15)
                 }
