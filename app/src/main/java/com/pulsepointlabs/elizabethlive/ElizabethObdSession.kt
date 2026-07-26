@@ -33,6 +33,24 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
             initial.copy(
                 adapterName = preferences.getString("obd_device_name", null) ?: initial.adapterName,
                 settings = initial.settings.copy(
+                    theme = preferences.getString("theme", null)
+                        ?.let { runCatching { ThemeSetting.valueOf(it) }.getOrNull() }
+                        ?: initial.settings.theme,
+                    units = preferences.getString("units", null)
+                        ?.let { runCatching { UnitSystem.valueOf(it) }.getOrNull() }
+                        ?: initial.settings.units,
+                    smoothing = preferences.getBoolean("graph_smoothing", initial.settings.smoothing),
+                    defaultWindow = preferences.getString("default_window", null)
+                        ?.let { runCatching { TimeWindow.valueOf(it) }.getOrNull() }
+                        ?: initial.settings.defaultWindow,
+                    recordingIntervalMillis = preferences.getLong(
+                        "recording_interval_millis",
+                        initial.settings.recordingIntervalMillis,
+                    ),
+                    autoStartRecording = preferences.getBoolean(
+                        "auto_start_recording",
+                        initial.settings.autoStartRecording,
+                    ),
                     fuelPricePerGallon = savedFuelPrice,
                     fuelPriceSource = if (hasSavedFuelPrice) {
                         "Saved local regular-gas price"
@@ -56,6 +74,7 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
         }
     private var connectionJob: Job? = null
     private var pollingJob: Job? = null
+    private var diagnosticsJob: Job? = null
     private var reconnectAttempts = 0
 
     @SuppressLint("MissingPermission")
@@ -151,8 +170,10 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
     override fun disconnect() {
         connectionJob?.cancel()
         pollingJob?.cancel()
+        diagnosticsJob?.cancel()
         connectionJob = null
         pollingJob = null
+        diagnosticsJob = null
         scope.launch { transport.disconnect() }
         mutableState.update {
             it.copy(
@@ -197,11 +218,13 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
             val result = initialized.getOrThrow()
             reconnectAttempts = 0
             mutableState.update {
+                val autoStart = !reconnecting && it.settings.autoStartRecording
                 it.copy(
                     connectionState = ConnectionState.CONNECTED,
                     connectionDetail = "${result.protocolName} · ${result.supportedPids.size} PIDs reported",
                     supportedPids = result.supportedPids,
                     pidDiagnostics = emptyMap(),
+                    diagnostics = VehicleDiagnostics(),
                     protocolName = result.protocolName,
                     lastConnectionError = null,
                     liveDriveStartedAtMillis = if (reconnecting) {
@@ -211,9 +234,19 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                     },
                     liveFuelUsedLiters = if (reconnecting) it.liveFuelUsedLiters else 0.0,
                     liveDistanceKm = if (reconnecting) it.liveDistanceKm else 0.0,
+                    samples = if (autoStart) emptyList() else it.samples,
+                    trip = if (autoStart) {
+                        TripSummary(
+                            isRecording = true,
+                            startedAtMillis = System.currentTimeMillis(),
+                        )
+                    } else {
+                        it.trip
+                    },
                 )
             }
             startPolling()
+            refreshDiagnostics()
         }
     }
 
@@ -318,9 +351,12 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                     commandedEquivalenceRatio = equivalenceRatio,
                     fuelRateEstimated = reportedFuelRate == null && estimatedFuelRate != null,
                 )
-                val elapsedHours = (now - previousTimestamp).coerceAtLeast(0L) / 3_600_000.0
-                previousTimestamp = now
-                addSample(sample, elapsedHours)
+                val recordingInterval = state.value.settings.recordingIntervalMillis
+                if (now - previousTimestamp >= recordingInterval) {
+                    val elapsedHours = (now - previousTimestamp).coerceAtLeast(0L) / 3_600_000.0
+                    previousTimestamp = now
+                    addSample(sample, elapsedHours)
+                }
                 cycle++
                 delay(25)
             }
@@ -335,6 +371,58 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
             } else {
                 it.copy(pidDiagnostics = it.pidDiagnostics + (pid to diagnostic))
             }
+        }
+    }
+
+    fun refreshDiagnostics() {
+        if (state.value.connectionState != ConnectionState.CONNECTED) {
+            mutableState.update {
+                it.copy(
+                    diagnostics = it.diagnostics.copy(
+                        isLoading = false,
+                        error = "Connect to Elizabeth before refreshing diagnostics.",
+                    )
+                )
+            }
+            return
+        }
+        diagnosticsJob?.cancel()
+        diagnosticsJob = scope.launch {
+            mutableState.update {
+                it.copy(diagnostics = it.diagnostics.copy(isLoading = true, error = null))
+            }
+            val result = elm.readVehicleDiagnostics { status ->
+                mutableState.update { it.copy(connectionDetail = status) }
+            }
+            result.fold(
+                onSuccess = { snapshot ->
+                    mutableState.update {
+                        it.copy(
+                            connectionDetail = "${it.protocolName ?: "OBD"} · live",
+                            diagnostics = VehicleDiagnostics(
+                                vin = snapshot.vin,
+                                storedDtcs = snapshot.storedDtcs,
+                                pendingDtcs = snapshot.pendingDtcs,
+                                permanentDtcs = snapshot.permanentDtcs,
+                                readinessMonitors = snapshot.readinessMonitors,
+                                milOn = snapshot.milOn,
+                                freezeFrameAvailable = snapshot.freezeFrameAvailable,
+                                lastCheckedMillis = System.currentTimeMillis(),
+                            ),
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    mutableState.update {
+                        it.copy(
+                            diagnostics = it.diagnostics.copy(
+                                isLoading = false,
+                                error = error.message ?: "Diagnostic refresh failed.",
+                            )
+                        )
+                    }
+                },
+            )
         }
     }
 
@@ -420,19 +508,41 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
         it.copy(
             liveDriveStartedAtMillis = if (recording) System.currentTimeMillis() else it.liveDriveStartedAtMillis,
             liveFuelUsedLiters = if (recording) 0.0 else it.liveFuelUsedLiters,
+            liveDistanceKm = if (recording) 0.0 else it.liveDistanceKm,
+            samples = if (recording) emptyList() else it.samples,
             trip = if (recording) {
-                it.trip.copy(isRecording = true, startedAtMillis = System.currentTimeMillis(), events = emptyList())
+                TripSummary(isRecording = true, startedAtMillis = System.currentTimeMillis())
             } else it.trip.copy(isRecording = false),
         )
     }
-    fun deleteTrip() = mutableState.update { it.copy(trip = TripSummary()) }
-    fun setTheme(theme: ThemeSetting) = mutableState.update { it.copy(settings = it.settings.copy(theme = theme)) }
-    fun setUnits(units: UnitSystem) = mutableState.update { it.copy(settings = it.settings.copy(units = units)) }
-    fun toggleSmoothing() = mutableState.update { it.copy(settings = it.settings.copy(smoothing = !it.settings.smoothing)) }
+    fun deleteTrip() = mutableState.update {
+        it.copy(
+            trip = TripSummary(),
+            samples = emptyList(),
+            liveFuelUsedLiters = 0.0,
+            liveDistanceKm = 0.0,
+            liveDriveStartedAtMillis = System.currentTimeMillis(),
+        )
+    }
+    fun setTheme(theme: ThemeSetting) {
+        preferences.edit().putString("theme", theme.name).apply()
+        mutableState.update { it.copy(settings = it.settings.copy(theme = theme)) }
+    }
+    fun setUnits(units: UnitSystem) {
+        preferences.edit().putString("units", units.name).apply()
+        mutableState.update { it.copy(settings = it.settings.copy(units = units)) }
+    }
+    fun toggleSmoothing() = mutableState.update {
+        val smoothing = !it.settings.smoothing
+        preferences.edit().putBoolean("graph_smoothing", smoothing).apply()
+        it.copy(settings = it.settings.copy(smoothing = smoothing))
+    }
     fun setDefaultWindow(window: TimeWindow) = mutableState.update {
+        preferences.edit().putString("default_window", window.name).apply()
         it.copy(settings = it.settings.copy(defaultWindow = window), timeWindow = window)
     }
     fun setRecordingInterval(intervalMillis: Long) = mutableState.update {
+        preferences.edit().putLong("recording_interval_millis", intervalMillis).apply()
         it.copy(settings = it.settings.copy(recordingIntervalMillis = intervalMillis))
     }
     fun setFuelPricePerGallon(price: Double) {
@@ -448,7 +558,9 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
         }
     }
     fun toggleAutoStart() = mutableState.update {
-        it.copy(settings = it.settings.copy(autoStartRecording = !it.settings.autoStartRecording))
+        val autoStart = !it.settings.autoStartRecording
+        preferences.edit().putBoolean("auto_start_recording", autoStart).apply()
+        it.copy(settings = it.settings.copy(autoStartRecording = autoStart))
     }
 
     private fun detectEvent(sample: TelemetrySample): TripEvent? = when {

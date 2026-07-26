@@ -32,6 +32,7 @@ fun RollingTelemetryChart(
     inspected: TelemetrySample?,
     modifier: Modifier = Modifier,
     chartHeight: Dp = 288.dp,
+    smoothing: Boolean = true,
     onTap: () -> Unit,
     onInspect: (TelemetrySample?) -> Unit,
 ) {
@@ -74,13 +75,13 @@ fun RollingTelemetryChart(
                 drawLine(grid, Offset(x, top), Offset(x, bottom), 1.dp.toPx())
             }
             if (samples.size > 1) {
-                if ("RPM" in channels) drawSeries(samples, left, right, top, bottom, RpmBlue) {
+                if ("RPM" in channels) drawSeries(samples, left, right, top, bottom, RpmBlue, smoothing) {
                     it.rpm?.let { rpm -> (rpm / 6_500.0).toFloat() }
                 }
-                if ("Boost" in channels) drawSeries(samples, left, right, top, bottom, BoostTeal) {
+                if ("Boost" in channels) drawSeries(samples, left, right, top, bottom, BoostTeal, smoothing) {
                     it.boostPsi?.let { boost -> ((boost + 12.0) / 30.0).toFloat() }
                 }
-                if ("Throttle" in channels) drawSeries(samples, left, right, top, bottom, ThrottleAmber) {
+                if ("Throttle" in channels) drawSeries(samples, left, right, top, bottom, ThrottleAmber, smoothing) {
                     it.throttlePercent?.let { throttle -> (throttle / 100.0).toFloat() }
                 }
             }
@@ -103,13 +104,24 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSeries(
     top: Float,
     bottom: Float,
     color: Color,
+    smoothing: Boolean,
     value: (TelemetrySample) -> Float?,
 ) {
     val path = Path()
     var hasPreviousPoint = false
+    val normalizedValues = samples.map(value)
     samples.forEachIndexed { index, sample ->
         val x = left + (right - left) * index / max(1, samples.lastIndex).toFloat()
-        val normalized = value(sample)?.coerceIn(0f, 1f)
+        val normalized = if (smoothing) {
+            val from = max(0, index - 2)
+            normalizedValues.subList(from, index + 1)
+                .filterNotNull()
+                .takeIf { it.isNotEmpty() }
+                ?.average()
+                ?.toFloat()
+        } else {
+            normalizedValues[index]
+        }?.coerceIn(0f, 1f)
         if (normalized == null) {
             hasPreviousPoint = false
             return@forEachIndexed

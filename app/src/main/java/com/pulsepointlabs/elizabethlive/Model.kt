@@ -82,6 +82,24 @@ data class PidDiagnostic(
     val value: Double? = null,
 )
 
+data class ReadinessMonitor(
+    val name: String,
+    val complete: Boolean,
+)
+
+data class VehicleDiagnostics(
+    val isLoading: Boolean = false,
+    val vin: String? = null,
+    val storedDtcs: List<String> = emptyList(),
+    val pendingDtcs: List<String> = emptyList(),
+    val permanentDtcs: List<String> = emptyList(),
+    val readinessMonitors: List<ReadinessMonitor> = emptyList(),
+    val milOn: Boolean? = null,
+    val freezeFrameAvailable: Boolean? = null,
+    val lastCheckedMillis: Long? = null,
+    val error: String? = null,
+)
+
 data class ElizabethUiState(
     val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
     val connectionDetail: String = "Ready to connect",
@@ -98,6 +116,7 @@ data class ElizabethUiState(
     val showDevicePicker: Boolean = false,
     val supportedPids: Set<Int> = emptySet(),
     val pidDiagnostics: Map<Int, PidDiagnostic> = emptyMap(),
+    val diagnostics: VehicleDiagnostics = VehicleDiagnostics(),
     val protocolName: String? = null,
     val lastConnectionError: String? = null,
     val trip: TripSummary = TripSummary(),

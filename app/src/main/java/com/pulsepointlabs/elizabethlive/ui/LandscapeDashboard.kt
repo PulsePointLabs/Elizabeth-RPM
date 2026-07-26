@@ -40,6 +40,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -379,6 +380,7 @@ private fun CenterPanel(
     units: UnitSystem,
     modifier: Modifier = Modifier,
 ) {
+    var inspectedSample by remember { mutableStateOf<TelemetrySample?>(null) }
     val rpmProgress = ((sample?.rpm ?: 0.0) / 6_500.0).toFloat().coerceIn(0f, 1f)
     val rpmColor = animatedStatusColor(((rpmProgress - .45f) / .5f).coerceIn(0f, 1f))
     val rpmValues = state.samples.mapNotNull { it.rpm }
@@ -430,11 +432,12 @@ private fun CenterPanel(
                 RollingTelemetryChart(
                     samples = state.samples.takeLast(120),
                     channels = setOf("RPM", "Boost", "Throttle"),
-                    inspected = null,
+                    inspected = inspectedSample,
                     modifier = Modifier.fillMaxWidth(),
                     chartHeight = 100.dp,
-                    onTap = { },
-                    onInspect = { },
+                    smoothing = state.settings.smoothing,
+                    onTap = { inspectedSample = null },
+                    onInspect = { inspectedSample = it },
                 )
             }
         }

@@ -60,6 +60,32 @@ class Elm327ClientTest {
     }
 
     @Test
+    fun `29 bit CAN initialization targets the physical engine ECU`() = runTest {
+        val transport = ScriptedTransport(
+            mapOf(
+                "ATZ" to "ELM327 v2.3\r>",
+                "ATE0" to "OK\r>",
+                "ATL0" to "OK\r>",
+                "ATS0" to "OK\r>",
+                "ATH0" to "OK\r>",
+                "ATSP0" to "OK\r>",
+                "0100" to "41 00 00 18 80 00\r>",
+                "ATDP" to "AUTO, ISO 15765-4 (CAN 29/500)\r>",
+                "ATCP18" to "OK\r>",
+                "ATSHDA10F1" to "OK\r>",
+                "ATCRA18DAF110" to "OK\r>",
+            )
+        )
+
+        val result = Elm327Client(transport).initialize { }.getOrThrow()
+
+        assertTrue(result.protocolName.endsWith("PCM 10"))
+        assertTrue("ATCP18" in transport.commands)
+        assertTrue("ATSHDA10F1" in transport.commands)
+        assertTrue("ATCRA18DAF110" in transport.commands)
+    }
+
+    @Test
     fun `PID read decodes a real response`() = runTest {
         val transport = ScriptedTransport(mapOf("010C" to "41 0C 2E E0\r>"))
         val rpm = StandardPids.registry.first { it.pid == 0x0C }
@@ -105,15 +131,46 @@ class Elm327ClientTest {
         assertEquals("0105 41 05 7B", observation.response)
     }
 
+    @Test
+    fun `vehicle diagnostics decode VIN DTCs readiness and freeze frame`() = runTest {
+        val transport = ScriptedTransport(
+            mapOf(
+                "0902" to
+                    "49 02 01 31 48 47 43 56 31\r" +
+                    "49 02 02 46 31 4D 41 30 30\r" +
+                    "49 02 03 30 30 30 30 31\r>",
+                "03" to "43 01 33 00 00\r>",
+                "07" to "47 00 00\r>",
+                "0A" to "4A 00 00\r>",
+                "0101" to "41 01 81 07 65 00\r>",
+                "0202" to "42 02 01 33\r>",
+            )
+        )
+
+        val diagnostics = Elm327Client(transport).readVehicleDiagnostics().getOrThrow()
+
+        assertEquals("1HGCV1F1MA0000001", diagnostics.vin)
+        assertEquals(listOf("P0133"), diagnostics.storedDtcs)
+        assertTrue(diagnostics.pendingDtcs.isEmpty())
+        assertTrue(diagnostics.permanentDtcs.isEmpty())
+        assertEquals(true, diagnostics.milOn)
+        assertEquals(true, diagnostics.freezeFrameAvailable)
+        assertTrue(diagnostics.readinessMonitors.any { it.name == "Catalyst" && it.complete })
+        assertTrue(diagnostics.readinessMonitors.any { it.name == "Oxygen sensor" && it.complete })
+    }
+
     private open class ScriptedTransport(
         private val responses: Map<String, String>,
     ) : ObdTransport {
+        val commands = mutableListOf<String>()
         private val mutableState = MutableStateFlow(TransportState.CONNECTED)
         override val state: StateFlow<TransportState> = mutableState
         override suspend fun connect(deviceAddress: String): Result<Unit> = Result.success(Unit)
-        override suspend fun send(command: String, timeoutMillis: Long): TransportResult =
-            responses[command]?.let(TransportResult::Response)
+        override suspend fun send(command: String, timeoutMillis: Long): TransportResult {
+            commands += command
+            return responses[command]?.let(TransportResult::Response)
                 ?: TransportResult.Failure("Unexpected command: $command", false)
+        }
         override suspend fun disconnect() {
             mutableState.value = TransportState.DISCONNECTED
         }

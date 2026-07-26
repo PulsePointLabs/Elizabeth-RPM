@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.res.Configuration
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.net.Uri
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -374,6 +376,7 @@ private fun LiveScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
                         samples = visible,
                         channels = state.selectedChannels,
                         inspected = state.inspectedSample,
+                        smoothing = state.settings.smoothing,
                         onTap = viewModel::togglePaused,
                         onInspect = viewModel::inspect,
                     )
@@ -504,6 +507,21 @@ private fun MetricText(label: String, value: String, modifier: Modifier = Modifi
 @Composable
 private fun TripScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
     val trip = liveTripSummary(state)
+    var inspectedTripSample by remember { mutableStateOf<TelemetrySample?>(null) }
+    val context = LocalContext.current
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv")
+    ) { uri ->
+        uri?.let {
+            exportTelemetryCsv(
+                context = context,
+                uri = it,
+                samples = state.samples.filter { sample ->
+                    trip.startedAtMillis?.let { started -> sample.timestampMillis >= started } ?: true
+                },
+            )
+        }
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(18.dp),
@@ -518,7 +536,13 @@ private fun TripScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
                 Button(onClick = viewModel::toggleTrip, modifier = Modifier.weight(1f).height(52.dp)) {
                     Text(if (trip.isRecording) "Stop Trip" else "Start Trip")
                 }
-                OutlinedButton(onClick = { }, modifier = Modifier.weight(1f).height(52.dp)) { Text("Export CSV") }
+                OutlinedButton(
+                    onClick = { exportLauncher.launch("Elizabeth-trip-${System.currentTimeMillis()}.csv") },
+                    enabled = state.samples.isNotEmpty(),
+                    modifier = Modifier.weight(1f).height(52.dp),
+                ) {
+                    Text("Export CSV")
+                }
             }
             Spacer(Modifier.height(10.dp))
             OutlinedButton(onClick = viewModel::deleteTrip, modifier = Modifier.fillMaxWidth().height(50.dp)) {
@@ -554,10 +578,11 @@ private fun TripScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
                     RollingTelemetryChart(
                         samples = state.samples,
                         channels = setOf("RPM", "Boost", "Throttle"),
-                        inspected = null,
+                        inspected = inspectedTripSample,
                         modifier = Modifier.height(230.dp),
-                        onTap = { },
-                        onInspect = { },
+                        smoothing = state.settings.smoothing,
+                        onTap = { inspectedTripSample = null },
+                        onInspect = { inspectedTripSample = it },
                     )
                 }
             }
@@ -627,7 +652,11 @@ private fun FuelCostSummaryCard(state: ElizabethUiState, viewModel: ElizabethVie
                 CostTile(
                     "Fuel-rate status",
                     if (hasLiveFuelRate) {
-                        "Measured"
+                        if (state.samples.lastOrNull()?.fuelRateEstimated == true) {
+                            "Estimated from MAF"
+                        } else {
+                            "Measured"
+                        }
                     } else {
                         "Not reported"
                     },
@@ -746,9 +775,38 @@ private fun EventRow(event: TripEvent) {
 @Composable
 private fun HealthScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
     val latest = state.samples.lastOrNull()
+    val diagnostics = state.diagnostics
+    val allDtcs = diagnostics.storedDtcs + diagnostics.pendingDtcs + diagnostics.permanentDtcs
+    val incompleteMonitors = diagnostics.readinessMonitors.count { !it.complete }
     val healthItems = listOf(
-        HealthItem("Diagnostic trouble codes", "Not checked yet in this build.", HealthStatus.NOTICE),
-        HealthItem("Emissions readiness", "Not checked yet in this build.", HealthStatus.NOTICE),
+        HealthItem(
+            "Diagnostic trouble codes",
+            when {
+                diagnostics.lastCheckedMillis == null -> "Connect to Elizabeth to check trouble codes."
+                allDtcs.isEmpty() -> "No stored, pending, or permanent trouble codes reported."
+                else -> "${allDtcs.distinct().size} trouble code(s) reported: ${allDtcs.distinct().joinToString()}."
+            },
+            when {
+                diagnostics.lastCheckedMillis == null -> HealthStatus.NOTICE
+                allDtcs.isEmpty() -> HealthStatus.GOOD
+                else -> HealthStatus.WARNING
+            },
+        ),
+        HealthItem(
+            "Emissions readiness",
+            when {
+                diagnostics.lastCheckedMillis == null -> "Connect to Elizabeth to read readiness monitors."
+                diagnostics.readinessMonitors.isEmpty() -> "No readiness-monitor response was reported."
+                incompleteMonitors == 0 -> "All ${diagnostics.readinessMonitors.size} available monitors are ready."
+                else -> "$incompleteMonitors of ${diagnostics.readinessMonitors.size} available monitors are not ready."
+            },
+            when {
+                diagnostics.lastCheckedMillis == null -> HealthStatus.NOTICE
+                diagnostics.readinessMonitors.isEmpty() -> HealthStatus.UNSUPPORTED
+                incompleteMonitors == 0 -> HealthStatus.GOOD
+                else -> HealthStatus.NOTICE
+            },
+        ),
         HealthItem(
             "Control-module voltage",
             latest?.voltage?.let { if (it < 11.8) "Voltage is low." else "Voltage is within the expected range." }
@@ -793,7 +851,7 @@ private fun HealthScreen(state: ElizabethUiState, viewModel: ElizabethViewModel)
                     DetailRow("App version", BuildConfig.VERSION_NAME)
                     DetailRow("Adapter", "vLinker MC+")
                     DetailRow("Protocol", state.protocolName ?: "Awaiting live connection")
-                    DetailRow("VIN", "Not queried yet")
+                    DetailRow("VIN", diagnostics.vin ?: "Not reported")
                     DetailRow(
                         "Supported PID scan",
                         if (state.supportedPids.isEmpty()) "Not completed" else "${state.supportedPids.size} PIDs reported by ECU",
@@ -807,6 +865,19 @@ private fun HealthScreen(state: ElizabethUiState, viewModel: ElizabethViewModel)
                         state.trip.startedAtMillis?.let { "${state.trip.durationSeconds / 60} min ${state.trip.durationSeconds % 60} sec" }
                             ?: "No trip recorded this session",
                     )
+                    Button(
+                        onClick = viewModel::refreshDiagnostics,
+                        enabled = state.connectionState == ConnectionState.CONNECTED && !diagnostics.isLoading,
+                        modifier = Modifier.fillMaxWidth().height(50.dp),
+                    ) {
+                        Text(
+                            if (diagnostics.isLoading) "Reading diagnostics…" else "Refresh VIN, codes & readiness",
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                    diagnostics.error?.let {
+                        Text(it, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
+                    }
                 }
             }
         }
@@ -816,6 +887,27 @@ private fun HealthScreen(state: ElizabethUiState, viewModel: ElizabethViewModel)
         items(healthItems.filter { it.status != HealthStatus.UNSUPPORTED }) {
             HealthRow(it)
         }
+        if (diagnostics.readinessMonitors.isNotEmpty()) {
+            item {
+                ElevatedCard(shape = RoundedCornerShape(22.dp)) {
+                    Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Readiness monitors", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        diagnostics.readinessMonitors.forEach { monitor ->
+                            DetailRow(monitor.name, if (monitor.complete) "Ready" else "Not ready")
+                        }
+                        DetailRow(
+                            "Malfunction indicator",
+                            diagnostics.milOn?.let { if (it) "On" else "Off" } ?: "Not reported",
+                        )
+                        DetailRow(
+                            "Freeze frame",
+                            diagnostics.freezeFrameAvailable?.let { if (it) "Available" else "Not reported" }
+                                ?: "Not checked",
+                        )
+                    }
+                }
+            }
+        }
         item {
             Text("Not reported", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Text("Unsupported parameters stay out of the dashboard.", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -824,7 +916,7 @@ private fun HealthScreen(state: ElizabethUiState, viewModel: ElizabethViewModel)
             HealthRow(it)
         }
         item {
-            SettingsCard(state.settings, viewModel)
+            SettingsCard(state, viewModel)
         }
         item { Spacer(Modifier.height(8.dp)) }
     }
@@ -880,7 +972,14 @@ private fun PidDiagnosticsCard(state: ElizabethUiState) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun SettingsCard(settings: AppSettings, viewModel: ElizabethViewModel) {
+private fun SettingsCard(state: ElizabethUiState, viewModel: ElizabethViewModel) {
+    val settings = state.settings
+    val context = LocalContext.current
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv")
+    ) { uri ->
+        uri?.let { exportTelemetryCsv(context, it, state.samples) }
+    }
     ElevatedCard(shape = RoundedCornerShape(22.dp)) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Settings", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
@@ -923,12 +1022,62 @@ private fun SettingsCard(settings: AppSettings, viewModel: ElizabethViewModel) {
             }
             DetailRow("Connection device", "vLinker MC+")
             DetailRow("Android Auto", "Four live gauges · RPM, boost, coolant, voltage")
-            OutlinedButton(onClick = { }, modifier = Modifier.fillMaxWidth().height(48.dp)) {
+            OutlinedButton(
+                onClick = { exportLauncher.launch("Elizabeth-all-data-${System.currentTimeMillis()}.csv") },
+                enabled = state.samples.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+            ) {
                 Text("Export all local data")
             }
         }
     }
 }
+
+private fun exportTelemetryCsv(
+    context: android.content.Context,
+    uri: Uri,
+    samples: List<TelemetrySample>,
+) {
+    runCatching {
+        context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { writer ->
+            writer.appendLine(
+                "timestamp_millis,rpm,speed_kph,boost_psi,throttle_percent,coolant_c," +
+                    "intake_c,stft_b1_percent,ltft_b1_percent,voltage,engine_load_percent," +
+                    "timing_advance_degrees,fuel_rate_lph,maf_gps,equivalence_ratio," +
+                    "fuel_rate_estimated"
+            )
+            samples.forEach { sample ->
+                writer.appendLine(
+                    listOf(
+                        sample.timestampMillis.toString(),
+                        sample.rpm.csvNumber(),
+                        sample.speedKph.csvNumber(),
+                        sample.boostPsi.csvNumber(),
+                        sample.throttlePercent.csvNumber(),
+                        sample.coolantC.csvNumber(),
+                        sample.intakeC.csvNumber(),
+                        sample.shortFuelTrim.csvNumber(),
+                        sample.longFuelTrim.csvNumber(),
+                        sample.voltage.csvNumber(),
+                        sample.engineLoad.csvNumber(),
+                        sample.timingAdvance.csvNumber(),
+                        sample.fuelRateLitersPerHour.csvNumber(),
+                        sample.massAirFlowGramsPerSecond.csvNumber(),
+                        sample.commandedEquivalenceRatio.csvNumber(),
+                        sample.fuelRateEstimated.toString(),
+                    ).joinToString(",")
+                )
+            }
+        } ?: error("Android could not open the selected file.")
+    }.onSuccess {
+        Toast.makeText(context, "CSV exported", Toast.LENGTH_SHORT).show()
+    }.onFailure {
+        Toast.makeText(context, "Export failed: ${it.message}", Toast.LENGTH_LONG).show()
+    }
+}
+
+private fun Double?.csvNumber(): String =
+    this?.let { String.format(Locale.US, "%.6f", it) } ?: ""
 
 @Composable
 private fun HealthRow(item: HealthItem) {

@@ -70,6 +70,13 @@ fuel inputs, it distinguishes a decoded value, `NO DATA`, a malformed payload, a
 error while showing only a short sanitized adapter reply. The Health screen also displays the
 installed app version so vehicle reports can be tied to the exact build.
 
+Version 0.7.0 uses physical engine-ECU addressing when automatic detection selects ISO 15765-4
+CAN 29/500. It sends read-only requests to PCM address `18DA10F1` and accepts engine replies from
+`18DAF110`, recovering standard values that the Accord returned as `NO DATA` to functional
+broadcasts. VIN, stored/pending/permanent DTCs, emissions readiness, MIL state, and freeze-frame
+availability now refresh automatically and on demand. Both CSV buttons create real files. Graph
+smoothing, recording interval, auto-start recording, and persisted settings are fully wired.
+
 ## Build
 
 1. Install Android Studio with Android SDK 36 and JDK 17.

@@ -13,8 +13,8 @@ android {
         applicationId = "com.pulsepointlabs.elizabethlive"
         minSdk = 31
         targetSdk = 36
-        versionCode = 11
-        versionName = "0.6.2-pid-diagnostics"
+        versionCode = 12
+        versionName = "0.7.0-pcm-routing"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }

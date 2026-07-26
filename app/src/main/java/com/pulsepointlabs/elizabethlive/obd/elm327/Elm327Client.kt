@@ -5,6 +5,7 @@ import com.pulsepointlabs.elizabethlive.obd.pid.PidDefinition
 import com.pulsepointlabs.elizabethlive.obd.transport.ObdTransport
 import com.pulsepointlabs.elizabethlive.obd.transport.TransportResult
 import kotlinx.coroutines.delay
+import com.pulsepointlabs.elizabethlive.ReadinessMonitor
 
 data class ElmInitialization(
     val supportedPids: Set<Int>,
@@ -17,6 +18,16 @@ data class PidReadObservation(
     val value: Double?,
     val status: PidReadStatus,
     val response: String,
+)
+
+data class ElmVehicleDiagnostics(
+    val vin: String?,
+    val storedDtcs: List<String>,
+    val pendingDtcs: List<String>,
+    val permanentDtcs: List<String>,
+    val readinessMonitors: List<ReadinessMonitor>,
+    val milOn: Boolean?,
+    val freezeFrameAvailable: Boolean?,
 )
 
 class Elm327Client(private val transport: ObdTransport) {
@@ -41,7 +52,23 @@ class Elm327Client(private val transport: ObdTransport) {
             is TransportResult.Response -> cleanTextResponse(response.raw, "ATDP")
             else -> "Automatic"
         }
-        ElmInitialization(supported, protocol.ifBlank { "Automatic" })
+        val protocolName = protocol.ifBlank { "Automatic" }
+        if (protocolName.contains("29/500", ignoreCase = true)) {
+            onStatus("Targeting the 29-bit engine ECU…")
+            // Physical ISO 15765 addressing for engine ECU 0x10:
+            // request 18 DA 10 F1, accept replies from 18 DA F1 10.
+            requireSuccessful("ATCP18", 2_000)
+            requireSuccessful("ATSHDA10F1", 2_000)
+            requireSuccessful("ATCRA18DAF110", 2_000)
+        }
+        ElmInitialization(
+            supportedPids = supported,
+            protocolName = if (protocolName.contains("29/500", ignoreCase = true)) {
+                "$protocolName · PCM 10"
+            } else {
+                protocolName
+            },
+        )
     }
 
     suspend fun read(definition: PidDefinition): Result<Double?> =
@@ -90,6 +117,136 @@ class Elm327Client(private val transport: ObdTransport) {
             .replace(Regex("\\s+"), " ")
             .trim()
             .take(120)
+
+    suspend fun readVehicleDiagnostics(
+        onStatus: (String) -> Unit = {},
+    ): Result<ElmVehicleDiagnostics> = runCatching {
+        onStatus("Reading vehicle identification…")
+        val vin = optionalResponse("0902", 5_000)?.let(::parseVin)
+
+        onStatus("Reading stored trouble codes…")
+        val stored = optionalResponse("03", 4_000)?.let { parseDtcs(it, 0x43) }.orEmpty()
+
+        onStatus("Reading pending trouble codes…")
+        val pending = optionalResponse("07", 4_000)?.let { parseDtcs(it, 0x47) }.orEmpty()
+
+        onStatus("Reading permanent trouble codes…")
+        val permanent = optionalResponse("0A", 4_000)?.let { parseDtcs(it, 0x4A) }.orEmpty()
+
+        onStatus("Reading emissions readiness…")
+        val readinessPayload = optionalResponse("0101", 4_000)?.let {
+            Elm327ResponseParser.payloadFor(it, 1, 0x01, "0101")
+        }
+        val readiness = readinessPayload?.let(::parseReadiness)
+
+        onStatus("Checking freeze-frame availability…")
+        val freezeFrame = optionalResponse("0202", 4_000)?.let {
+            parseDtcs(it, 0x42).isNotEmpty()
+        }
+
+        ElmVehicleDiagnostics(
+            vin = vin,
+            storedDtcs = stored,
+            pendingDtcs = pending,
+            permanentDtcs = permanent,
+            readinessMonitors = readiness?.monitors.orEmpty(),
+            milOn = readiness?.milOn,
+            freezeFrameAvailable = freezeFrame,
+        )
+    }
+
+    private suspend fun optionalResponse(command: String, timeoutMillis: Long): String? =
+        when (val response = sendWithRetry(command, timeoutMillis, retries = 1)) {
+            is TransportResult.Response -> response.raw
+            TransportResult.NoData -> null
+            is TransportResult.Failure -> error(response.message)
+        }
+
+    private fun parseVin(raw: String): String? {
+        val chunks = raw.replace(">", "\n")
+            .lineSequence()
+            .mapNotNull { line ->
+                val compact = line.uppercase().filter { it in '0'..'9' || it in 'A'..'F' }
+                val marker = compact.indexOf("4902")
+                if (marker < 0) return@mapNotNull null
+                val bytes = compact.drop(marker + 4)
+                    .chunked(2)
+                    .mapNotNull { it.toIntOrNull(16) }
+                if (bytes.isEmpty()) return@mapNotNull null
+                val sequence = bytes.first()
+                val data = if (sequence in 1..9) bytes.drop(1) else bytes
+                sequence to data
+            }
+            .sortedBy { it.first }
+            .flatMap { it.second }
+        return chunks
+            .filter { it in 0x20..0x7E }
+            .map(Int::toChar)
+            .joinToString("")
+            .trim()
+            .takeIf { it.length >= 11 }
+            ?.take(17)
+    }
+
+    private fun parseDtcs(raw: String, responseMode: Int): List<String> {
+        val compact = raw.uppercase().filter { it in '0'..'9' || it in 'A'..'F' }
+        val marker = "%02X".format(responseMode)
+        val start = compact.indexOf(marker)
+        if (start < 0) return emptyList()
+        return compact.drop(start + marker.length)
+            .chunked(4)
+            .mapNotNull { pair ->
+                if (pair.length != 4 || pair == "0000") return@mapNotNull null
+                val a = pair.take(2).toIntOrNull(16) ?: return@mapNotNull null
+                val b = pair.drop(2).toIntOrNull(16) ?: return@mapNotNull null
+                val family = "PCBU"[(a shr 6) and 0x03]
+                "%c%d%X%X%X".format(
+                    family,
+                    (a shr 4) and 0x03,
+                    a and 0x0F,
+                    (b shr 4) and 0x0F,
+                    b and 0x0F,
+                )
+            }
+            .distinct()
+    }
+
+    private data class ReadinessResult(
+        val monitors: List<ReadinessMonitor>,
+        val milOn: Boolean,
+    )
+
+    private fun parseReadiness(payload: List<Int>): ReadinessResult? {
+        if (payload.size < 4) return null
+        val a = payload[0]
+        val b = payload[1]
+        val c = payload[2]
+        val d = payload[3]
+        val monitors = mutableListOf<ReadinessMonitor>()
+        fun addIfAvailable(name: String, available: Boolean, incomplete: Boolean) {
+            if (available) monitors += ReadinessMonitor(name, complete = !incomplete)
+        }
+        addIfAvailable("Misfire", b and 0x01 != 0, b and 0x10 != 0)
+        addIfAvailable("Fuel system", b and 0x02 != 0, b and 0x20 != 0)
+        addIfAvailable("Comprehensive components", b and 0x04 != 0, b and 0x40 != 0)
+        val compressionIgnition = b and 0x08 != 0
+        if (!compressionIgnition) {
+            val names = listOf(
+                "Catalyst",
+                "Heated catalyst",
+                "Evaporative system",
+                "Secondary air",
+                "A/C refrigerant",
+                "Oxygen sensor",
+                "Oxygen-sensor heater",
+                "EGR / VVT",
+            )
+            names.forEachIndexed { bit, name ->
+                addIfAvailable(name, c and (1 shl bit) != 0, d and (1 shl bit) != 0)
+            }
+        }
+        return ReadinessResult(monitors, milOn = a and 0x80 != 0)
+    }
 
     private suspend fun discoverSupportedPids(
         firstResponse: String,
