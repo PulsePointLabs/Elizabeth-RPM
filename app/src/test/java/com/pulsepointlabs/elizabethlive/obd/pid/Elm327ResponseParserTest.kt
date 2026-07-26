@@ -18,6 +18,18 @@ class Elm327ResponseParserTest {
     }
 
     @Test
+    fun `payload parser retains responses from multiple ECUs`() {
+        val raw = "7E8 06 41 00 18 00 00 01\r7EA 06 41 00 00 18 80 01\r>"
+        assertEquals(
+            listOf(
+                listOf(0x18, 0x00, 0x00, 0x01),
+                listOf(0x00, 0x18, 0x80, 0x01),
+            ),
+            Elm327ResponseParser.payloadsFor(raw, 1, 0x00, "0100"),
+        )
+    }
+
+    @Test
     fun `no data returns no payload`() {
         assertNull(Elm327ResponseParser.payloadFor("010C\rNO DATA\r>", 1, 0x0C, "010C"))
     }
@@ -38,4 +50,3 @@ class Elm327ResponseParserTest {
         assertEquals(emptyList<String>(), Elm327ResponseParser.clean("STOPPED\rUNABLE TO CONNECT\r>"))
     }
 }
-

@@ -45,6 +45,12 @@ class StandardPidsTest {
     }
 
     @Test
+    fun `mass air flow and equivalence ratio decode standard formulas`() {
+        assertEquals(10.0, decoder(0x10)(listOf(0x03, 0xE8))!!, 0.001)
+        assertEquals(1.0, decoder(0x44)(listOf(0x80, 0x00))!!, 0.001)
+    }
+
+    @Test
     fun `calculated boost uses map minus barometric pressure`() {
         assertEquals(14.5038, StandardPids.calculatedBoostPsi(200.0, 100.0), 0.001)
         assertEquals(-7.2519, StandardPids.calculatedBoostPsi(50.0, 100.0), 0.001)

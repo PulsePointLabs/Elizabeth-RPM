@@ -66,6 +66,7 @@ import com.pulsepointlabs.elizabethlive.ElizabethUiState
 import com.pulsepointlabs.elizabethlive.TelemetrySample
 import com.pulsepointlabs.elizabethlive.UnitSystem
 import com.pulsepointlabs.elizabethlive.trip.FuelCostCalculator
+import com.pulsepointlabs.elizabethlive.trip.FuelEfficiencyCalculator
 import com.pulsepointlabs.elizabethlive.ui.components.RollingTelemetryChart
 import com.pulsepointlabs.elizabethlive.ui.theme.BoostTeal
 import com.pulsepointlabs.elizabethlive.ui.theme.GoodGreen
@@ -114,7 +115,13 @@ fun LandscapeDashboard(
             modifier = Modifier.fillMaxSize().padding(6.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            SpeedPanel(sample, units, Modifier.weight(.27f).fillMaxHeight())
+            FuelEconomyPanel(
+                sample = sample,
+                units = units,
+                distanceKm = state.liveDistanceKm,
+                fuelUsedLiters = state.liveFuelUsedLiters,
+                modifier = Modifier.weight(.27f).fillMaxHeight(),
+            )
             CenterPanel(state, sample, units, Modifier.weight(.45f).fillMaxHeight())
             SupportingPanel(
                 sample = sample,
@@ -264,64 +271,102 @@ private fun ImmersiveDashboardEffect() {
     DisposableEffect(view) {
         val window = (view.context as Activity).window
         val controller = WindowCompat.getInsetsController(window, view)
+        val wasKeepingScreenOn = view.keepScreenOn
+        view.keepScreenOn = true
         controller.hide(WindowInsetsCompat.Type.systemBars())
         controller.systemBarsBehavior =
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         onDispose {
+            view.keepScreenOn = wasKeepingScreenOn
             controller.show(WindowInsetsCompat.Type.systemBars())
         }
     }
 }
 
 @Composable
-private fun SpeedPanel(sample: TelemetrySample?, units: UnitSystem, modifier: Modifier = Modifier) {
-    val speed = when (units) {
-        UnitSystem.US -> sample?.speedKph?.times(.621371)
-        UnitSystem.METRIC -> sample?.speedKph
+private fun FuelEconomyPanel(
+    sample: TelemetrySample?,
+    units: UnitSystem,
+    distanceKm: Double,
+    fuelUsedLiters: Double,
+    modifier: Modifier = Modifier,
+) {
+    val average = when (units) {
+        UnitSystem.US -> FuelEfficiencyCalculator.averageMpg(distanceKm, fuelUsedLiters)
+        UnitSystem.METRIC ->
+            FuelEfficiencyCalculator.averageLitersPer100Km(distanceKm, fuelUsedLiters)
     }
-    val maxSpeed = if (units == UnitSystem.US) 120.0 else 190.0
-    val speedProgress = ((speed ?: 0.0) / maxSpeed).toFloat().coerceIn(0f, 1f)
-    val speedSeverity = ((speedProgress - .42f) / .45f).coerceIn(0f, 1f)
-    val speedColor = animatedStatusColor(speedSeverity)
-    val throttleProgress = ((sample?.throttlePercent ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f)
-    val throttleColor = animatedStatusColor(throttleProgress)
+    val instantaneous = when (units) {
+        UnitSystem.US ->
+            FuelEfficiencyCalculator.instantaneousMpg(sample?.speedKph, sample?.fuelRateLitersPerHour)
+        UnitSystem.METRIC ->
+            FuelEfficiencyCalculator.instantaneousLitersPer100Km(
+                sample?.speedKph,
+                sample?.fuelRateLitersPerHour,
+            )
+    }
+    val economyUnit = if (units == UnitSystem.US) "MPG" else "L/100 KM"
+    val economySeverity = when (units) {
+        UnitSystem.US -> (1f - ((instantaneous ?: average ?: 25.0) / 42.0).toFloat()).coerceIn(0f, 1f)
+        UnitSystem.METRIC -> (((instantaneous ?: average ?: 8.0) - 5.0) / 12.0).toFloat().coerceIn(0f, 1f)
+    }
+    val economyColor = animatedStatusColor(economySeverity)
+    val progress = when (units) {
+        UnitSystem.US -> ((instantaneous ?: 0.0) / 50.0).toFloat().coerceIn(0f, 1f)
+        UnitSystem.METRIC -> ((instantaneous ?: 0.0) / 20.0).toFloat().coerceIn(0f, 1f)
+    }
 
-    DashboardCard(modifier, accentColor = speedColor) {
+    DashboardCard(modifier, accentColor = economyColor) {
         Column(
             modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 10.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text("SPEED", fontSize = 15.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                "FUEL ECONOMY",
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Black,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Box(
                 modifier = Modifier.fillMaxWidth().weight(1f),
                 contentAlignment = Alignment.Center,
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        speed?.toInt()?.toString() ?: "—",
-                        fontSize = 76.sp,
-                        lineHeight = 76.sp,
+                        average?.oneDecimal() ?: "—",
+                        fontSize = 66.sp,
+                        lineHeight = 68.sp,
                         fontWeight = FontWeight.Black,
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         softWrap = false,
                     )
                     Text(
-                        if (units == UnitSystem.US) "MPH" else "KM/H",
-                        fontSize = 18.sp,
+                        "AVERAGE $economyUnit",
+                        fontSize = 16.sp,
                         fontWeight = FontWeight.Black,
-                        color = speedColor,
+                        color = economyColor,
                     )
-                    Spacer(Modifier.height(8.dp))
-                    SegmentedBar(speedProgress, speedColor, Modifier.fillMaxWidth(.82f))
+                    Text(
+                        when {
+                            sample?.fuelRateLitersPerHour == null -> "FUEL DATA NOT REPORTED"
+                            sample.fuelRateEstimated -> "ESTIMATED FROM MAF"
+                            else -> "ECU-REPORTED FUEL RATE"
+                        },
+                        modifier = Modifier.padding(top = 9.dp),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
                 }
             }
             MetricBarBox(
-                label = "THROTTLE",
-                value = sample?.throttlePercent?.toInt()?.let { "$it%" } ?: "—",
-                progress = throttleProgress,
-                color = throttleColor,
+                label = "REAL TIME",
+                value = instantaneous?.let { "${it.oneDecimal()} $economyUnit" } ?: "—",
+                progress = progress,
+                color = economyColor,
             )
         }
     }
@@ -336,6 +381,9 @@ private fun CenterPanel(
 ) {
     val rpmProgress = ((sample?.rpm ?: 0.0) / 6_500.0).toFloat().coerceIn(0f, 1f)
     val rpmColor = animatedStatusColor(((rpmProgress - .45f) / .5f).coerceIn(0f, 1f))
+    val rpmValues = state.samples.mapNotNull { it.rpm }
+    val averageRpm = rpmValues.takeIf { it.isNotEmpty() }?.average()
+    val maximumRpm = rpmValues.maxOrNull()
     val boostPsi = sample?.boostPsi
     val boostProgress = (((boostPsi ?: -12.0) + 12.0) / 30.0).toFloat().coerceIn(0f, 1f)
     val boostLoad = ((boostPsi ?: 0.0).coerceAtLeast(0.0) / 18.0).toFloat().coerceIn(0f, 1f)
@@ -349,6 +397,8 @@ private fun CenterPanel(
             ) {
                 TachometerGauge(
                     rpm = sample?.rpm,
+                    averageRpm = averageRpm,
+                    maximumRpm = maximumRpm,
                     color = rpmColor,
                     modifier = Modifier.weight(.52f).fillMaxHeight(),
                 )
@@ -444,8 +494,8 @@ private fun SupportingPanel(
                 modifier = Modifier.weight(1f).fillMaxHeight(),
             )
             VisualMetricTile(
-                label = "FUEL RATE",
-                value = "${sample?.fuelRateLitersPerHour?.oneDecimal() ?: "—"} L/h",
+                label = if (sample?.fuelRateEstimated == true) "FUEL RATE · EST" else "FUEL RATE",
+                value = sample?.fuelRateLitersPerHour?.let { "${it.oneDecimal()} L/h" } ?: "—",
                 progress = fuelLoad,
                 severity = fuelLoad,
                 modifier = Modifier.weight(1f).fillMaxHeight(),
@@ -619,6 +669,8 @@ private fun StatusBar(progress: Float, color: Color, modifier: Modifier = Modifi
 @Composable
 private fun TachometerGauge(
     rpm: Double?,
+    averageRpm: Double?,
+    maximumRpm: Double?,
     color: Color,
     modifier: Modifier = Modifier,
 ) {
@@ -676,6 +728,29 @@ private fun TachometerGauge(
                     cap = StrokeCap.Round,
                 )
             }
+            listOf(
+                averageRpm to RpmBlue,
+                maximumRpm to ThrottleAmber,
+            ).forEach { (markerRpm, markerColor) ->
+                markerRpm ?: return@forEach
+                val markerProgress = (markerRpm / 7_000.0).toFloat().coerceIn(0f, 1f)
+                val markerRadians = (start + sweep * markerProgress) * PI / 180.0
+                val markerInner = outerRadius - 17.dp.toPx()
+                val markerOuter = outerRadius + 2.dp.toPx()
+                drawLine(
+                    color = markerColor,
+                    start = Offset(
+                        center.x + cos(markerRadians).toFloat() * markerInner,
+                        center.y + sin(markerRadians).toFloat() * markerInner,
+                    ),
+                    end = Offset(
+                        center.x + cos(markerRadians).toFloat() * markerOuter,
+                        center.y + sin(markerRadians).toFloat() * markerOuter,
+                    ),
+                    strokeWidth = 3.dp.toPx(),
+                    cap = StrokeCap.Round,
+                )
+            }
             val needleAngle = (start + sweep * progress) * PI / 180.0
             val needleLength = outerRadius * .67f
             drawLine(
@@ -692,34 +767,46 @@ private fun TachometerGauge(
             drawCircle(color = color, radius = 4.dp.toPx(), center = center)
         }
         Column(
-            modifier = Modifier.padding(top = 8.dp),
+            modifier = Modifier.padding(top = 6.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-                "ENGINE RPM",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Black,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-            )
-            Text(
                 rpm?.toInt()?.toString() ?: "—",
-                fontSize = 34.sp,
-                lineHeight = 35.sp,
+                fontSize = 36.sp,
+                lineHeight = 37.sp,
                 fontWeight = FontWeight.Black,
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
                 softWrap = false,
             )
             Text(
-                "RPM · 0—7,000",
+                "ENGINE RPM",
                 fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
+                fontWeight = FontWeight.Black,
                 color = color,
                 maxLines = 1,
             )
+            Row(
+                modifier = Modifier.padding(top = 3.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                GaugeStatistic("AVG", averageRpm, RpmBlue)
+                GaugeStatistic("MAX", maximumRpm, ThrottleAmber)
+            }
         }
     }
+}
+
+@Composable
+private fun GaugeStatistic(label: String, rpm: Double?, color: Color) {
+    Text(
+        "$label ${rpm?.toInt()?.let { "%,d".format(it) } ?: "—"}",
+        fontSize = 9.sp,
+        fontWeight = FontWeight.Black,
+        color = color,
+        maxLines = 1,
+        softWrap = false,
+    )
 }
 
 @Composable

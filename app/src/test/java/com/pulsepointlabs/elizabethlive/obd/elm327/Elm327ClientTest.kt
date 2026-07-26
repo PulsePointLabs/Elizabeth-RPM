@@ -37,6 +37,29 @@ class Elm327ClientTest {
     }
 
     @Test
+    fun `initialization merges supported PID bitmaps from multiple ECUs`() = runTest {
+        val transport = ScriptedTransport(
+            mapOf(
+                "ATZ" to "ELM327 v2.3\r>",
+                "ATE0" to "OK\r>",
+                "ATL0" to "OK\r>",
+                "ATS0" to "OK\r>",
+                "ATH0" to "OK\r>",
+                "ATSP0" to "OK\r>",
+                "0100" to "7E8 06 41 00 00 18 00 00\r7EA 06 41 00 08 00 80 00\r>",
+                "ATDP" to "ISO 15765-4 (CAN 11/500)\r>",
+            )
+        )
+
+        val supported = Elm327Client(transport).initialize { }.getOrThrow().supportedPids
+
+        assertTrue(0x0C in supported)
+        assertTrue(0x0D in supported)
+        assertTrue(0x05 in supported)
+        assertTrue(0x11 in supported)
+    }
+
+    @Test
     fun `PID read decodes a real response`() = runTest {
         val transport = ScriptedTransport(mapOf("010C" to "41 0C 2E E0\r>"))
         val rpm = StandardPids.registry.first { it.pid == 0x0C }

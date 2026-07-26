@@ -62,11 +62,14 @@ class Elm327Client(private val transport: ObdTransport) {
         var response = firstResponse
         while (base <= 0x60) {
             onStatus("Scanning supported PIDs ${"%02X".format(base + 1)}–${"%02X".format(base + 0x20)}…")
-            val payload = Elm327ResponseParser.payloadFor(response, 1, base, "01%02X".format(base))
-                ?: break
-            if (payload.size < 4) break
+            // Several ECUs can answer a support query. Merge their bitmaps so a sparse response
+            // from one module cannot hide a standard PID reported by the engine ECU.
+            val payloads = Elm327ResponseParser
+                .payloadsFor(response, 1, base, "01%02X".format(base))
+                .filter { it.size >= 4 }
+            if (payloads.isEmpty()) break
             for (bit in 0 until 32) {
-                if (payload[bit / 8] and (1 shl (7 - bit % 8)) != 0) {
+                if (payloads.any { it[bit / 8] and (1 shl (7 - bit % 8)) != 0 }) {
                     supported += base + bit + 1
                 }
             }

@@ -25,6 +25,9 @@ object StandardPids {
         PidDefinition(1, 0x0F, "Intake-air temperature", "°C", PollPriority.MEDIUM) {
             it.firstOrNull()?.minus(40)?.toDouble()
         },
+        PidDefinition(1, 0x10, "Mass air flow", "g/s", PollPriority.MEDIUM) {
+            if (it.size >= 2) ((it[0] * 256) + it[1]) / 100.0 else null
+        },
         PidDefinition(1, 0x11, "Throttle position", "%", PollPriority.FAST) {
             it.firstOrNull()?.times(100.0)?.div(255.0)
         },
@@ -48,6 +51,9 @@ object StandardPids {
         },
         PidDefinition(1, 0x42, "Control-module voltage", "V", PollPriority.SLOW) {
             if (it.size >= 2) ((it[0] * 256) + it[1]) / 1000.0 else null
+        },
+        PidDefinition(1, 0x44, "Commanded equivalence ratio", "λ", PollPriority.SLOW) {
+            if (it.size >= 2) ((it[0] * 256) + it[1]) / 32768.0 else null
         },
         PidDefinition(1, 0x5E, "Engine fuel rate", "L/h", PollPriority.MEDIUM) {
             if (it.size >= 2) ((it[0] * 256) + it[1]) / 20.0 else null
@@ -95,14 +101,19 @@ object Elm327ResponseParser {
     }
 
     fun payloadFor(raw: String, mode: Int, pid: Int, command: String? = null): List<Int>? {
+        return payloadsFor(raw, mode, pid, command).firstOrNull()
+    }
+
+    fun payloadsFor(raw: String, mode: Int, pid: Int, command: String? = null): List<List<Int>> {
         val responseMode = mode + 0x40
+        val payloads = mutableListOf<List<Int>>()
         for (line in clean(raw, command)) {
             val bytes = line.split(' ').mapNotNull { it.toIntOrNull(16) }
             val index = bytes.indices.firstOrNull { i ->
                 i + 1 < bytes.size && bytes[i] == responseMode && bytes[i + 1] == pid
             } ?: continue
-            return bytes.drop(index + 2).takeIf { it.isNotEmpty() }
+            bytes.drop(index + 2).takeIf { it.isNotEmpty() }?.let(payloads::add)
         }
-        return null
+        return payloads
     }
 }

@@ -54,6 +54,12 @@ Bluetooth/ELM327 session used by the phone, and the car screen can reconnect to 
 start or stop a trip, and disconnect. Android Auto controls the final typography and layout; its
 template system does not permit Elizabeth Live to draw the phone dashboard's custom Canvas gauges.
 
+Version 0.6.0 keeps the immersive landscape dashboard awake and replaces the speed panel with
+average and real-time fuel economy. ECU-reported fuel rate is preferred; when it is unavailable,
+the app can clearly label and use a standard MAF-based estimate. The tachometer now places its
+label below the live value and adds visible average and maximum RPM markers. Supported-PID
+discovery also merges replies from multiple ECUs instead of trusting only the first bitmap.
+
 ## Build
 
 1. Install Android Studio with Android SDK 36 and JDK 17.

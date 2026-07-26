@@ -10,6 +10,7 @@ import com.pulsepointlabs.elizabethlive.obd.elm327.Elm327Client
 import com.pulsepointlabs.elizabethlive.obd.pid.PollPriority
 import com.pulsepointlabs.elizabethlive.obd.pid.StandardPids
 import com.pulsepointlabs.elizabethlive.obd.transport.BluetoothClassicObdTransport
+import com.pulsepointlabs.elizabethlive.trip.FuelEfficiencyCalculator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -202,8 +203,13 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                     supportedPids = result.supportedPids,
                     protocolName = result.protocolName,
                     lastConnectionError = null,
-                    liveDriveStartedAtMillis = System.currentTimeMillis(),
-                    liveFuelUsedLiters = 0.0,
+                    liveDriveStartedAtMillis = if (reconnecting) {
+                        it.liveDriveStartedAtMillis
+                    } else {
+                        System.currentTimeMillis()
+                    },
+                    liveFuelUsedLiters = if (reconnecting) it.liveFuelUsedLiters else 0.0,
+                    liveDistanceKm = if (reconnecting) it.liveDistanceKm else 0.0,
                 )
             }
             startPolling(result.supportedPids)
@@ -250,6 +256,12 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                 val now = System.currentTimeMillis()
                 val map = values[0x0B]
                 val barometric = values[0x33]
+                val maf = values[0x10]
+                val equivalenceRatio = values[0x44]
+                val reportedFuelRate = values[0x5E]
+                val estimatedFuelRate = if (reportedFuelRate == null) {
+                    FuelEfficiencyCalculator.fuelRateFromMaf(maf, equivalenceRatio)
+                } else null
                 val sample = TelemetrySample(
                     timestampMillis = now,
                     rpm = values[0x0C],
@@ -265,7 +277,10 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                     voltage = values[0x42],
                     engineLoad = values[0x04],
                     timingAdvance = values[0x0E],
-                    fuelRateLitersPerHour = values[0x5E],
+                    fuelRateLitersPerHour = reportedFuelRate ?: estimatedFuelRate,
+                    massAirFlowGramsPerSecond = maf,
+                    commandedEquivalenceRatio = equivalenceRatio,
+                    fuelRateEstimated = reportedFuelRate == null && estimatedFuelRate != null,
                 )
                 val elapsedHours = (now - previousTimestamp).coerceAtLeast(0L) / 3_600_000.0
                 previousTimestamp = now
@@ -300,6 +315,8 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                 samples = (it.samples + sample).takeLast(2_400),
                 liveFuelUsedLiters = it.liveFuelUsedLiters +
                     ((sample.fuelRateLitersPerHour ?: 0.0) * elapsedHours),
+                liveDistanceKm = it.liveDistanceKm +
+                    ((sample.speedKph ?: 0.0) * elapsedHours),
                 trip = if (it.trip.isRecording && event != null) {
                     it.trip.copy(events = (it.trip.events + event).takeLast(20))
                 } else it.trip,

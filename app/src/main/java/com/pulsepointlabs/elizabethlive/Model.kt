@@ -24,6 +24,9 @@ data class TelemetrySample(
     val engineLoad: Double?,
     val timingAdvance: Double?,
     val fuelRateLitersPerHour: Double?,
+    val massAirFlowGramsPerSecond: Double? = null,
+    val commandedEquivalenceRatio: Double? = null,
+    val fuelRateEstimated: Boolean = false,
 )
 
 data class TripEvent(
@@ -82,6 +85,7 @@ data class ElizabethUiState(
     val inspectedSample: TelemetrySample? = null,
     val liveDriveStartedAtMillis: Long = System.currentTimeMillis(),
     val liveFuelUsedLiters: Double = 0.0,
+    val liveDistanceKm: Double = 0.0,
     val pairedDevices: List<PairedObdDevice> = emptyList(),
     val showDevicePicker: Boolean = false,
     val supportedPids: Set<Int> = emptySet(),
