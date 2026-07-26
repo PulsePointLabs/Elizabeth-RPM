@@ -65,6 +65,11 @@ probes only the curated dashboard registry at its fast, medium, and slow rates, 
 PID that returns a real value. This recovers standard sensors that an adapter or ECU omitted from
 its bitmap without continuously polling a giant PID list.
 
+Version 0.6.2 adds visible read-only PID diagnostics to Health. For the missing temperature and
+fuel inputs, it distinguishes a decoded value, `NO DATA`, a malformed payload, and a transport
+error while showing only a short sanitized adapter reply. The Health screen also displays the
+installed app version so vehicle reports can be tied to the exact build.
+
 ## Build
 
 1. Install Android Studio with Android SDK 36 and JDK 17.

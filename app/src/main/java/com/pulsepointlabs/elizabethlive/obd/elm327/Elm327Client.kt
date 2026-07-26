@@ -11,6 +11,14 @@ data class ElmInitialization(
     val protocolName: String,
 )
 
+enum class PidReadStatus { VALUE, NO_DATA, PARSE_FAILED, DECODE_FAILED }
+
+data class PidReadObservation(
+    val value: Double?,
+    val status: PidReadStatus,
+    val response: String,
+)
+
 class Elm327Client(private val transport: ObdTransport) {
     suspend fun initialize(onStatus: (String) -> Unit): Result<ElmInitialization> = runCatching {
         val sequence = listOf(
@@ -36,7 +44,10 @@ class Elm327Client(private val transport: ObdTransport) {
         ElmInitialization(supported, protocol.ifBlank { "Automatic" })
     }
 
-    suspend fun read(definition: PidDefinition): Result<Double?> = runCatching {
+    suspend fun read(definition: PidDefinition): Result<Double?> =
+        readObserved(definition).map(PidReadObservation::value)
+
+    suspend fun readObserved(definition: PidDefinition): Result<PidReadObservation> = runCatching {
         val command = "%02X%02X".format(definition.mode, definition.pid)
         when (val response = sendWithRetry(command, 2_500, retries = 1)) {
             is TransportResult.Response -> {
@@ -46,12 +57,39 @@ class Elm327Client(private val transport: ObdTransport) {
                     definition.pid,
                     command,
                 )
-                payload?.let(definition.decoder)
+                if (payload == null) {
+                    PidReadObservation(
+                        value = null,
+                        status = PidReadStatus.PARSE_FAILED,
+                        response = sanitizeForDiagnostic(response.raw),
+                    )
+                } else {
+                    val value = definition.decoder(payload)
+                    PidReadObservation(
+                        value = value,
+                        status = if (value == null) {
+                            PidReadStatus.DECODE_FAILED
+                        } else {
+                            PidReadStatus.VALUE
+                        },
+                        response = sanitizeForDiagnostic(response.raw),
+                    )
+                }
             }
-            TransportResult.NoData -> null
+            TransportResult.NoData -> PidReadObservation(
+                value = null,
+                status = PidReadStatus.NO_DATA,
+                response = "NO DATA",
+            )
             is TransportResult.Failure -> error(response.message)
         }
     }
+
+    private fun sanitizeForDiagnostic(raw: String): String =
+        raw.replace('>', ' ')
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .take(120)
 
     private suspend fun discoverSupportedPids(
         firstResponse: String,

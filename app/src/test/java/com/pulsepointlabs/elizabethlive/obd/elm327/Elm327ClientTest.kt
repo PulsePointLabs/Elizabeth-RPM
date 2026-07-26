@@ -76,6 +76,35 @@ class Elm327ClientTest {
         assertEquals(null, Elm327Client(transport).read(fuelRate).getOrThrow())
     }
 
+    @Test
+    fun `diagnostic read distinguishes no data from parser rejection`() = runTest {
+        val fuelRate = StandardPids.registry.first { it.pid == 0x5E }
+        val noDataTransport = object : ScriptedTransport(emptyMap()) {
+            override suspend fun send(command: String, timeoutMillis: Long): TransportResult =
+                TransportResult.NoData
+        }
+        val noData = Elm327Client(noDataTransport).readObserved(fuelRate).getOrThrow()
+        assertEquals(PidReadStatus.NO_DATA, noData.status)
+        assertEquals("NO DATA", noData.response)
+
+        val malformedTransport = ScriptedTransport(mapOf("015E" to "BUS INIT: OK\r>"))
+        val malformed = Elm327Client(malformedTransport).readObserved(fuelRate).getOrThrow()
+        assertEquals(PidReadStatus.PARSE_FAILED, malformed.status)
+        assertEquals("BUS INIT: OK", malformed.response)
+    }
+
+    @Test
+    fun `diagnostic read retains sanitized successful response`() = runTest {
+        val coolant = StandardPids.registry.first { it.pid == 0x05 }
+        val observation = Elm327Client(
+            ScriptedTransport(mapOf("0105" to "0105\r41 05 7B\r>"))
+        ).readObserved(coolant).getOrThrow()
+
+        assertEquals(PidReadStatus.VALUE, observation.status)
+        assertEquals(83.0, observation.value!!, 0.001)
+        assertEquals("0105 41 05 7B", observation.response)
+    }
+
     private open class ScriptedTransport(
         private val responses: Map<String, String>,
     ) : ObdTransport {

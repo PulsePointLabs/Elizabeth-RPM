@@ -201,6 +201,7 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                     connectionState = ConnectionState.CONNECTED,
                     connectionDetail = "${result.protocolName} · ${result.supportedPids.size} PIDs reported",
                     supportedPids = result.supportedPids,
+                    pidDiagnostics = emptyMap(),
                     protocolName = result.protocolName,
                     lastConnectionError = null,
                     liveDriveStartedAtMillis = if (reconnecting) {
@@ -245,16 +246,36 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                 }.distinctBy { it.pid }
 
                 for (definition in batch) {
-                    val result = elm.read(definition)
+                    val result = elm.readObserved(definition)
                     if (result.isFailure) {
                         consecutiveFailures++
+                        updatePidDiagnostic(
+                            definition.pid,
+                            PidDiagnostic(
+                                command = "%02X%02X".format(definition.mode, definition.pid),
+                                name = definition.name,
+                                status = "TRANSPORT ERROR",
+                                response = result.exceptionOrNull()?.message ?: "Unknown transport error",
+                            ),
+                        )
                         if (consecutiveFailures >= 3) {
                             beginReconnect()
                             return@launch
                         }
                     } else {
                         consecutiveFailures = 0
-                        result.getOrNull()?.let { value ->
+                        val observation = result.getOrThrow()
+                        updatePidDiagnostic(
+                            definition.pid,
+                            PidDiagnostic(
+                                command = "%02X%02X".format(definition.mode, definition.pid),
+                                name = definition.name,
+                                status = observation.status.name.replace('_', ' '),
+                                response = observation.response,
+                                value = observation.value,
+                            ),
+                        )
+                        observation.value?.let { value ->
                             values[definition.pid] = value
                             mutableState.update {
                                 if (definition.pid in it.supportedPids) {
@@ -302,6 +323,17 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                 addSample(sample, elapsedHours)
                 cycle++
                 delay(25)
+            }
+        }
+    }
+
+    private fun updatePidDiagnostic(pid: Int, diagnostic: PidDiagnostic) {
+        if (pid !in DiagnosticPids) return
+        mutableState.update {
+            if (it.pidDiagnostics[pid] == diagnostic) {
+                it
+            } else {
+                it.copy(pidDiagnostics = it.pidDiagnostics + (pid to diagnostic))
             }
         }
     }
@@ -431,4 +463,7 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
         else -> null
     }
 
+    private companion object {
+        val DiagnosticPids = setOf(0x05, 0x0F, 0x10, 0x44, 0x5E)
+    }
 }

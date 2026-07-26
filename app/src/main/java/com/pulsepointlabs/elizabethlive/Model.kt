@@ -74,6 +74,14 @@ data class AppSettings(
 
 data class PairedObdDevice(val name: String, val address: String)
 
+data class PidDiagnostic(
+    val command: String,
+    val name: String,
+    val status: String,
+    val response: String,
+    val value: Double? = null,
+)
+
 data class ElizabethUiState(
     val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
     val connectionDetail: String = "Ready to connect",
@@ -89,6 +97,7 @@ data class ElizabethUiState(
     val pairedDevices: List<PairedObdDevice> = emptyList(),
     val showDevicePicker: Boolean = false,
     val supportedPids: Set<Int> = emptySet(),
+    val pidDiagnostics: Map<Int, PidDiagnostic> = emptyMap(),
     val protocolName: String? = null,
     val lastConnectionError: String? = null,
     val trip: TripSummary = TripSummary(),

@@ -790,6 +790,7 @@ private fun HealthScreen(state: ElizabethUiState, viewModel: ElizabethViewModel)
                     Text("Vehicle & adapter", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     DetailRow("Vehicle", "Elizabeth · 2021 Honda Accord EX-L")
                     DetailRow("Engine", "1.5T · CVT")
+                    DetailRow("App version", BuildConfig.VERSION_NAME)
                     DetailRow("Adapter", "vLinker MC+")
                     DetailRow("Protocol", state.protocolName ?: "Awaiting live connection")
                     DetailRow("VIN", "Not queried yet")
@@ -809,6 +810,9 @@ private fun HealthScreen(state: ElizabethUiState, viewModel: ElizabethViewModel)
                 }
             }
         }
+        item {
+            PidDiagnosticsCard(state)
+        }
         items(healthItems.filter { it.status != HealthStatus.UNSUPPORTED }) {
             HealthRow(it)
         }
@@ -823,6 +827,54 @@ private fun HealthScreen(state: ElizabethUiState, viewModel: ElizabethViewModel)
             SettingsCard(state.settings, viewModel)
         }
         item { Spacer(Modifier.height(8.dp)) }
+    }
+}
+
+@Composable
+private fun PidDiagnosticsCard(state: ElizabethUiState) {
+    val watched = listOf(
+        0x05 to "Coolant",
+        0x0F to "Intake air",
+        0x10 to "Mass air flow",
+        0x5E to "Engine fuel rate",
+        0x44 to "Equivalence ratio",
+    )
+    ElevatedCard(shape = RoundedCornerShape(22.dp)) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Live PID diagnostics", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text(
+                "Sanitized adapter replies · no VIN or trip data",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            watched.forEachIndexed { index, (pid, label) ->
+                if (index > 0) HorizontalDivider()
+                val diagnostic = state.pidDiagnostics[pid]
+                val command = "01%02X".format(pid)
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                    Column(Modifier.weight(1f)) {
+                        Text("$command · $label", fontWeight = FontWeight.Bold)
+                        Text(
+                            diagnostic?.status ?: "WAITING FOR REQUEST",
+                            color = when (diagnostic?.status) {
+                                "VALUE" -> GoodGreen
+                                "NO DATA" -> ThrottleAmber
+                                null -> MaterialTheme.colorScheme.onSurfaceVariant
+                                else -> WarningRed
+                            },
+                            fontWeight = FontWeight.Black,
+                        )
+                    }
+                    diagnostic?.value?.let {
+                        Text(it.oneDecimal(), fontWeight = FontWeight.Black, color = GoodGreen)
+                    }
+                }
+                Text(
+                    diagnostic?.response ?: "No reply captured yet.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 
