@@ -36,8 +36,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.DirectionsCar
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.QueryStats
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -85,7 +85,6 @@ import com.pulsepointlabs.elizabethlive.ui.components.FuelTrimBalance
 import com.pulsepointlabs.elizabethlive.ui.components.RollingTelemetryChart
 import com.pulsepointlabs.elizabethlive.ui.components.VoltageSparkline
 import com.pulsepointlabs.elizabethlive.trip.FuelCostCalculator
-import com.pulsepointlabs.elizabethlive.trip.FuelUsageRecord
 import com.pulsepointlabs.elizabethlive.ui.theme.BoostTeal
 import com.pulsepointlabs.elizabethlive.ui.theme.ElizabethTheme
 import com.pulsepointlabs.elizabethlive.ui.theme.GoodGreen
@@ -107,7 +106,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
-
 private data class Destination(val label: String, val icon: ImageVector)
 
 @Composable
@@ -119,7 +117,7 @@ private fun ElizabethApp(state: ElizabethUiState, viewModel: ElizabethViewModel)
         if (granted) viewModel.prepareConnection() else viewModel.onBluetoothPermissionDenied()
     }
     val onConnectionControl = {
-        if (state.connectionState != ConnectionState.DISCONNECTED || state.isSimulated) {
+        if (state.connectionState != ConnectionState.DISCONNECTED) {
             viewModel.disconnect()
         } else if (
             ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
@@ -280,10 +278,6 @@ private fun ConnectionHeader(state: ElizabethUiState, onConnect: () -> Unit) {
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                     )
-                    if (state.isSimulated) {
-                        Spacer(Modifier.width(8.dp))
-                        SimulatedBadge()
-                    }
                 }
                 Text(
                     "${state.adapterName}  ·  ${state.connectionDetail}",
@@ -387,15 +381,6 @@ private fun LiveScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
                     GraphLegend(latest, state.selectedChannels, state.settings.units)
                 }
             }
-        }
-        item {
-            ScenarioSelector(
-                isActive = state.isSimulated,
-                selected = state.scenario,
-                onStart = viewModel::startDemoMode,
-                onStop = viewModel::stopDemoMode,
-                onSelect = viewModel::setScenario,
-            )
         }
         item {
             BoxWithConstraints {
@@ -517,47 +502,8 @@ private fun MetricText(label: String, value: String, modifier: Modifier = Modifi
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ScenarioSelector(
-    isActive: Boolean,
-    selected: DriveScenario,
-    onStart: () -> Unit,
-    onStop: () -> Unit,
-    onSelect: (DriveScenario) -> Unit,
-) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = .45f))) {
-        Column(Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Demo Mode", fontWeight = FontWeight.Bold)
-                    Text(
-                        if (isActive) "Simulated · ${selected.label}" else "Off · live adapter data only",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                if (isActive) {
-                    OutlinedButton(onClick = onStop) { Text("Stop demo") }
-                } else {
-                    Button(onClick = onStart) { Text("Start demo") }
-                }
-            }
-            if (isActive) {
-                Spacer(Modifier.height(10.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                    DriveScenario.entries.forEach {
-                        AssistChip(onClick = { onSelect(it) }, label = { Text(it.label) }, leadingIcon = {
-                            Box(Modifier.size(8.dp).clip(CircleShape).background(if (it == selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline))
-                        })
-                    }
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
 private fun TripScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
-    val trip = if (state.isSimulated) state.trip else liveTripSummary(state)
+    val trip = liveTripSummary(state)
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(18.dp),
@@ -575,26 +521,19 @@ private fun TripScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
                 OutlinedButton(onClick = { }, modifier = Modifier.weight(1f).height(52.dp)) { Text("Export CSV") }
             }
             Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                FilledTonalButton(onClick = viewModel::replayTrip, modifier = Modifier.weight(1f).height(50.dp)) {
-                    Text("Replay Trip")
-                }
-                OutlinedButton(onClick = viewModel::deleteTrip, modifier = Modifier.weight(1f).height(50.dp)) {
-                    Text("Delete Trip", color = MaterialTheme.colorScheme.error)
-                }
+            OutlinedButton(onClick = viewModel::deleteTrip, modifier = Modifier.fillMaxWidth().height(50.dp)) {
+                Text("Delete Trip", color = MaterialTheme.colorScheme.error)
             }
         }
         item {
             if (trip.isRecording) {
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
                     Text(
-                        if (state.isSimulated) "Recording trip · Demo data" else "Recording trip · Live OBD data",
+                        "Recording trip · Live OBD data",
                         Modifier.padding(16.dp),
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
-            } else if (state.isSimulated) {
-                SimulatedNotice("Showing a simulated recorded trip")
             } else {
                 Card {
                     Text(
@@ -646,7 +585,7 @@ private fun TripScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
         item {
             Text("Notable events", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         }
-        val visibleEvents = if (state.isSimulated && trip.events.isEmpty()) sampleEvents() else trip.events
+        val visibleEvents = trip.events
         if (visibleEvents.isEmpty()) {
             item {
                 Text("No notable live events recorded.", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -666,16 +605,8 @@ private fun FuelCostSummaryCard(state: ElizabethUiState, viewModel: ElizabethVie
     var priceText by remember(settings.fuelPricePerGallon) {
         mutableStateOf(settings.fuelPricePerGallon.money())
     }
-    val now = System.currentTimeMillis()
-    val demoHistory = listOf(
-        FuelUsageRecord(now, state.trip.fuelUsedLiters),
-        FuelUsageRecord(now - 86_400_000L, 3.1),
-        FuelUsageRecord(now - 2 * 86_400_000L, 2.2),
-        FuelUsageRecord(now - 8 * 86_400_000L, 4.0),
-    )
-    val totals = FuelCostCalculator.aggregate(demoHistory, settings.fuelPricePerGallon)
     val liveCost = FuelCostCalculator.cost(state.liveFuelUsedLiters, settings.fuelPricePerGallon)
-    val hasLiveFuelRate = state.isSimulated || state.samples.lastOrNull()?.fuelRateLitersPerHour != null
+    val hasLiveFuelRate = state.samples.lastOrNull()?.fuelRateLitersPerHour != null
     ElevatedCard(shape = RoundedCornerShape(22.dp)) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -687,7 +618,6 @@ private fun FuelCostSummaryCard(state: ElizabethUiState, viewModel: ElizabethVie
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
-                if (state.isSimulated) SimulatedBadge()
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -695,10 +625,8 @@ private fun FuelCostSummaryCard(state: ElizabethUiState, viewModel: ElizabethVie
             ) {
                 CostTile("Current trip", if (hasLiveFuelRate) "$${liveCost.money()}" else "—", Modifier.weight(1f), GoodGreen)
                 CostTile(
-                    if (state.isSimulated) "Demo recorded trip" else "Fuel-rate status",
-                    if (state.isSimulated) {
-                        "$${FuelCostCalculator.cost(state.trip.fuelUsedLiters, settings.fuelPricePerGallon).money()}"
-                    } else if (hasLiveFuelRate) {
+                    "Fuel-rate status",
+                    if (hasLiveFuelRate) {
                         "Measured"
                     } else {
                         "Not reported"
@@ -706,18 +634,6 @@ private fun FuelCostSummaryCard(state: ElizabethUiState, viewModel: ElizabethVie
                     Modifier.weight(1f),
                     BoostTeal,
                 )
-            }
-            if (state.isSimulated) {
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    maxItemsInEachRow = 3,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    CostTile("Today", "$${totals.today.money()}", Modifier.width(105.dp))
-                    CostTile("This week", "$${totals.thisWeek.money()}", Modifier.width(105.dp))
-                    CostTile("This month", "$${totals.thisMonth.money()}", Modifier.width(105.dp))
-                }
             }
             Text(
                 "Set your local regular-gas price",
@@ -742,7 +658,7 @@ private fun FuelCostSummaryCard(state: ElizabethUiState, viewModel: ElizabethVie
                 }
             }
             Text(
-                "Costs use reported fuel rate when available. Unsupported live fuel rate is shown as unavailable, never replaced with demo data.",
+                "Costs use the ECU-reported fuel rate when available. Unsupported fuel rate is shown as unavailable.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -868,9 +784,6 @@ private fun HealthScreen(state: ElizabethUiState, viewModel: ElizabethViewModel)
             Text("Health", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Text("Plain-English vehicle and adapter status", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        if (state.isSimulated) {
-            item { SimulatedNotice("Health results are simulated in Demo Mode") }
-        }
         item {
             ElevatedCard(shape = RoundedCornerShape(22.dp)) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -886,13 +799,13 @@ private fun HealthScreen(state: ElizabethUiState, viewModel: ElizabethViewModel)
                     )
                     DetailRow(
                         "Connection",
-                        when {
-                            state.isSimulated -> "Demo Mode · simulated"
-                            state.connectionState == ConnectionState.CONNECTED -> "Live · ${state.adapterName}"
-                            else -> "Disconnected"
-                        },
+                        if (state.connectionState == ConnectionState.CONNECTED) "Live · ${state.adapterName}" else "Disconnected",
                     )
-                    DetailRow("Last recorded trip", "Today · 24 min 47 sec")
+                    DetailRow(
+                        "Last recorded trip",
+                        state.trip.startedAtMillis?.let { "${state.trip.durationSeconds / 60} min ${state.trip.durationSeconds % 60} sec" }
+                            ?: "No trip recorded this session",
+                    )
                 }
             }
         }
@@ -957,7 +870,6 @@ private fun SettingsCard(settings: AppSettings, viewModel: ElizabethViewModel) {
                 Text(if (settings.autoStartRecording) "Turn auto-start off" else "Turn auto-start on")
             }
             DetailRow("Connection device", "vLinker MC+")
-            DetailRow("Demo Mode", if (settings.demoMode) "On · simulated" else "Off · live data only")
             OutlinedButton(onClick = { }, modifier = Modifier.fillMaxWidth().height(48.dp)) {
                 Text("Export all local data")
             }
@@ -990,30 +902,6 @@ private fun DetailRow(label: String, value: String) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
         Text(label, Modifier.weight(.42f), color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(value, Modifier.weight(.58f), fontWeight = FontWeight.Medium)
-    }
-}
-
-@Composable
-private fun SimulatedNotice(text: String) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = .55f))) {
-        Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            SimulatedBadge()
-            Spacer(Modifier.width(10.dp))
-            Text(text, style = MaterialTheme.typography.bodyMedium)
-        }
-    }
-}
-
-@Composable
-private fun SimulatedBadge() {
-    Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = CircleShape) {
-        Text(
-            "SIMULATED",
-            Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onPrimaryContainer,
-        )
     }
 }
 
@@ -1109,9 +997,3 @@ private fun liveTripSummary(state: ElizabethUiState): TripSummary {
         fuelUsedLiters = state.liveFuelUsedLiters,
     )
 }
-
-private fun sampleEvents() = listOf(
-    TripEvent(268_000, "Hard acceleration", "Throttle 84% · 3,980 rpm"),
-    TripEvent(274_000, "Peak boost", "15.4 psi calculated"),
-    TripEvent(811_000, "High intake temperature", "46 °C after traffic stop"),
-)

@@ -1,15 +1,6 @@
 package com.pulsepointlabs.elizabethlive
 
 enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED, RECONNECTING }
-enum class DriveScenario(val label: String) {
-    IDLE("Idle"),
-    CRUISE("Normal cruise"),
-    MODERATE("Moderate acceleration"),
-    HARD("Hard acceleration"),
-    WARM_UP("Warm-up"),
-    HEAT_SOAK("Heat-soak"),
-    LOW_VOLTAGE_START("Low-voltage start"),
-}
 enum class TimeWindow(val label: String, val seconds: Int?) {
     THIRTY_SECONDS("30 sec", 30),
     TWO_MINUTES("2 min", 120),
@@ -44,19 +35,19 @@ data class TripEvent(
 data class TripSummary(
     val isRecording: Boolean = false,
     val startedAtMillis: Long? = null,
-    val durationSeconds: Long = 1_487,
-    val distanceKm: Double = 27.4,
-    val averageSpeedKph: Double = 66.3,
-    val maximumSpeedKph: Double = 111.0,
-    val averageRpm: Double = 1_842.0,
-    val maximumRpm: Double = 4_610.0,
-    val maximumBoostPsi: Double = 15.4,
-    val coolantRangeC: ClosedFloatingPointRange<Double> = 81.0..96.0,
-    val intakeRangeC: ClosedFloatingPointRange<Double> = 24.0..46.0,
-    val averageThrottle: Double = 21.0,
-    val fuelTrimRange: ClosedFloatingPointRange<Double> = -4.7..7.8,
-    val minimumVoltage: Double = 12.1,
-    val fuelUsedLiters: Double = 2.58,
+    val durationSeconds: Long = 0,
+    val distanceKm: Double = 0.0,
+    val averageSpeedKph: Double = 0.0,
+    val maximumSpeedKph: Double = 0.0,
+    val averageRpm: Double = 0.0,
+    val maximumRpm: Double = 0.0,
+    val maximumBoostPsi: Double = 0.0,
+    val coolantRangeC: ClosedFloatingPointRange<Double> = 0.0..0.0,
+    val intakeRangeC: ClosedFloatingPointRange<Double> = 0.0..0.0,
+    val averageThrottle: Double = 0.0,
+    val fuelTrimRange: ClosedFloatingPointRange<Double> = 0.0..0.0,
+    val minimumVoltage: Double = 0.0,
+    val fuelUsedLiters: Double = 0.0,
     val events: List<TripEvent> = emptyList(),
 )
 
@@ -76,7 +67,6 @@ data class AppSettings(
     val autoStartRecording: Boolean = false,
     val fuelPricePerGallon: Double = 4.00,
     val fuelPriceSource: String = "Example local price · edit before use",
-    val demoMode: Boolean = false,
 )
 
 data class PairedObdDevice(val name: String, val address: String)
@@ -85,8 +75,6 @@ data class ElizabethUiState(
     val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
     val connectionDetail: String = "Ready to connect",
     val adapterName: String = "vLinker MC+",
-    val isSimulated: Boolean = false,
-    val scenario: DriveScenario = DriveScenario.CRUISE,
     val samples: List<TelemetrySample> = emptyList(),
     val selectedChannels: Set<String> = setOf("RPM", "Boost", "Throttle"),
     val timeWindow: TimeWindow = TimeWindow.THIRTY_SECONDS,

@@ -61,8 +61,11 @@ import com.pulsepointlabs.elizabethlive.ui.theme.RpmBlue
 import com.pulsepointlabs.elizabethlive.ui.theme.ThrottleAmber
 import com.pulsepointlabs.elizabethlive.ui.theme.WarningRed
 import java.util.Locale
-import kotlin.math.abs
+import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sin
 
 @Composable
 fun LandscapeDashboard(
@@ -76,7 +79,7 @@ fun LandscapeDashboard(
     val sample = state.samples.lastOrNull()
     val units = state.settings.units
     val price = state.settings.fuelPricePerGallon
-    val tripCost = if (state.isSimulated || sample?.fuelRateLitersPerHour != null) {
+    val tripCost = if (sample?.fuelRateLitersPerHour != null) {
         FuelCostCalculator.cost(state.liveFuelUsedLiters, price)
     } else null
     val durationSeconds = max(0L, (System.currentTimeMillis() - state.liveDriveStartedAtMillis) / 1_000L)
@@ -145,7 +148,6 @@ private fun DashboardHeader(
                 Spacer(Modifier.width(7.dp))
                 Text(
                     when {
-                        connected && state.isSimulated -> "Demo · simulated"
                         connected -> "Live · ${state.adapterName}"
                         state.connectionState == ConnectionState.CONNECTING -> "Connecting · ${state.adapterName}"
                         state.connectionState == ConnectionState.RECONNECTING -> "Reconnecting · ${state.adapterName}"
@@ -158,18 +160,6 @@ private fun DashboardHeader(
             }
         }
         Spacer(Modifier.width(8.dp))
-        if (state.isSimulated) {
-            Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = CircleShape) {
-                Text(
-                    "SIMULATED",
-                    Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Black,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    maxLines = 1,
-                )
-            }
-        }
         Spacer(Modifier.weight(1f))
         if (connected) {
             Button(onClick = onToggleTrip, modifier = Modifier.height(40.dp)) {
@@ -177,9 +167,9 @@ private fun DashboardHeader(
             }
             Spacer(Modifier.width(6.dp))
         }
-        if (connected || state.connectionState != ConnectionState.DISCONNECTED || state.isSimulated) {
+        if (connected || state.connectionState != ConnectionState.DISCONNECTED) {
             OutlinedButton(onClick = onConnectionControl, modifier = Modifier.height(40.dp)) {
-                Text(if (connected || state.isSimulated) "Disconnect" else "Cancel", fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                Text(if (connected) "Disconnect" else "Cancel", fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
             }
         } else {
             Button(onClick = onConnectionControl, modifier = Modifier.height(40.dp)) {
@@ -232,7 +222,6 @@ private fun SpeedPanel(sample: TelemetrySample?, units: UnitSystem, modifier: Mo
                 modifier = Modifier.fillMaxWidth().weight(1f),
                 contentAlignment = Alignment.Center,
             ) {
-                SpeedArc(speedProgress, speedColor, Modifier.fillMaxSize())
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
                         speed?.toInt()?.toString() ?: "—",
@@ -249,6 +238,8 @@ private fun SpeedPanel(sample: TelemetrySample?, units: UnitSystem, modifier: Mo
                         fontWeight = FontWeight.Black,
                         color = speedColor,
                     )
+                    Spacer(Modifier.height(8.dp))
+                    SegmentedBar(speedProgress, speedColor, Modifier.fillMaxWidth(.82f))
                 }
             }
             MetricBarBox(
@@ -281,13 +272,10 @@ private fun CenterPanel(
                 Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                PrimaryMetric(
-                    label = "ENGINE RPM",
-                    value = sample?.rpm?.toInt()?.toString() ?: "—",
-                    unit = "rpm",
-                    progress = rpmProgress,
+                TachometerGauge(
+                    rpm = sample?.rpm,
                     color = rpmColor,
-                    modifier = Modifier.weight(.47f).fillMaxHeight(),
+                    modifier = Modifier.weight(.52f).fillMaxHeight(),
                 )
                 PrimaryMetric(
                     label = "CALCULATED BOOST / VACUUM",
@@ -299,7 +287,7 @@ private fun CenterPanel(
                     unit = if (units == UnitSystem.US) "psi" else "kPa",
                     progress = boostProgress,
                     color = boostColor,
-                    modifier = Modifier.weight(.53f).fillMaxHeight(),
+                    modifier = Modifier.weight(.48f).fillMaxHeight(),
                 )
             }
         }
@@ -553,31 +541,131 @@ private fun StatusBar(progress: Float, color: Color, modifier: Modifier = Modifi
 }
 
 @Composable
-private fun SpeedArc(progress: Float, color: Color, modifier: Modifier = Modifier) {
-    val animatedProgress by animateFloatAsState(progress.coerceIn(0f, 1f), tween(350), label = "speedArc")
+private fun TachometerGauge(
+    rpm: Double?,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    val progress by animateFloatAsState(
+        targetValue = ((rpm ?: 0.0) / 7_000.0).toFloat().coerceIn(0f, 1f),
+        animationSpec = tween(260),
+        label = "tachometerNeedle",
+    )
     val track = MaterialTheme.colorScheme.surfaceVariant
-    Canvas(modifier.padding(horizontal = 12.dp, vertical = 5.dp)) {
-        val stroke = 10.dp.toPx()
-        val inset = stroke / 2
-        val arcSize = Size(size.width - stroke, size.height * 1.5f)
-        drawArc(
-            color = track,
-            startAngle = 165f,
-            sweepAngle = 210f,
-            useCenter = false,
-            topLeft = Offset(inset, size.height * .08f),
-            size = arcSize,
-            style = Stroke(stroke, cap = StrokeCap.Round),
-        )
-        drawArc(
-            color = color,
-            startAngle = 165f,
-            sweepAngle = 210f * animatedProgress,
-            useCenter = false,
-            topLeft = Offset(inset, size.height * .08f),
-            size = arcSize,
-            style = Stroke(stroke, cap = StrokeCap.Round),
-        )
+    val tickColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val dialCenterColor = MaterialTheme.colorScheme.surface
+    Box(modifier, contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize().padding(3.dp)) {
+            val sweep = 270f
+            val start = 135f
+            val diameter = min(size.width, size.height) * .88f
+            val center = Offset(size.width / 2f, size.height * .53f)
+            val topLeft = Offset(center.x - diameter / 2f, center.y - diameter / 2f)
+            val stroke = 7.dp.toPx()
+            drawArc(
+                color = track,
+                startAngle = start,
+                sweepAngle = sweep,
+                useCenter = false,
+                topLeft = topLeft,
+                size = Size(diameter, diameter),
+                style = Stroke(stroke, cap = StrokeCap.Round),
+            )
+            drawArc(
+                color = color,
+                startAngle = start,
+                sweepAngle = sweep * progress,
+                useCenter = false,
+                topLeft = topLeft,
+                size = Size(diameter, diameter),
+                style = Stroke(stroke, cap = StrokeCap.Round),
+            )
+            val outerRadius = diameter / 2f - stroke * .25f
+            repeat(29) { index ->
+                val angle = start + sweep * index / 28f
+                val radians = angle * PI / 180.0
+                val major = index % 4 == 0
+                val innerRadius = outerRadius - if (major) 13.dp.toPx() else 7.dp.toPx()
+                drawLine(
+                    color = if (major) tickColor else tickColor.copy(alpha = .55f),
+                    start = Offset(
+                        center.x + cos(radians).toFloat() * innerRadius,
+                        center.y + sin(radians).toFloat() * innerRadius,
+                    ),
+                    end = Offset(
+                        center.x + cos(radians).toFloat() * outerRadius,
+                        center.y + sin(radians).toFloat() * outerRadius,
+                    ),
+                    strokeWidth = if (major) 2.dp.toPx() else 1.dp.toPx(),
+                    cap = StrokeCap.Round,
+                )
+            }
+            val needleAngle = (start + sweep * progress) * PI / 180.0
+            val needleLength = outerRadius * .67f
+            drawLine(
+                color = color,
+                start = center,
+                end = Offset(
+                    center.x + cos(needleAngle).toFloat() * needleLength,
+                    center.y + sin(needleAngle).toFloat() * needleLength,
+                ),
+                strokeWidth = 3.dp.toPx(),
+                cap = StrokeCap.Round,
+            )
+            drawCircle(color = dialCenterColor, radius = 7.dp.toPx(), center = center)
+            drawCircle(color = color, radius = 4.dp.toPx(), center = center)
+        }
+        Column(
+            modifier = Modifier.padding(top = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                "ENGINE RPM",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Black,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+            Text(
+                rpm?.toInt()?.toString() ?: "—",
+                fontSize = 34.sp,
+                lineHeight = 35.sp,
+                fontWeight = FontWeight.Black,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                softWrap = false,
+            )
+            Text(
+                "RPM · 0—7,000",
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = color,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SegmentedBar(progress: Float, color: Color, modifier: Modifier = Modifier) {
+    val animatedProgress by animateFloatAsState(
+        progress.coerceIn(0f, 1f),
+        tween(300),
+        label = "segmentedBar",
+    )
+    Row(modifier.height(8.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+        repeat(12) { index ->
+            val active = index < (animatedProgress * 12f)
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .background(
+                        if (active) color else MaterialTheme.colorScheme.surfaceVariant,
+                        RoundedCornerShape(2.dp),
+                    )
+            )
+        }
     }
 }
 

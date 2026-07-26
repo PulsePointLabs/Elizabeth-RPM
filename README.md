@@ -21,8 +21,6 @@ Version 0.3.0 adds the first real acquisition path for a paired Vgate vLinker MC
 - Nullable unsupported values; `NO DATA` is never converted into a fake zero
 - Automatic reconnect attempts after a temporary transport loss
 
-Demo Mode is off by default and must be started explicitly from the Live screen.
-
 Version 0.3.1 makes landscape a true driving surface even before connection: it always opens
 the dashboard, provides Connect/Disconnect directly in the compact header, hides Android system
 bars while active, removes portrait navigation and inset padding, and restores the normal app
@@ -35,14 +33,14 @@ calculated boost/vacuum, throttle, temperatures, voltage, fuel rate, trip time, 
 trip cost. `Exit dashboard` is always visible, and the normal app shows an equally visible
 `Open driving dashboard` control after exit.
 
-Fuel costs use an editable local regular-gas price. Demo fuel history and fuel rate are always
-labeled simulated. Live cost accounting will use standard Mode 01 PID `015E` when supported;
-unsupported values are not replaced with fake measured data. Automatic nearby pricing remains
+Fuel costs use an editable local regular-gas price. Live cost accounting uses standard Mode 01
+PID `015E` when supported; unsupported values are not replaced with fake measured data. Automatic nearby pricing remains
 behind a provider interface until a reliable user-configured price source is available.
 
-The v0.2.1 landscape refinement adds non-wrapping metric typography, a speed arc, animated
-fill bars on every dashboard metric, rounded status instruments, and continuous green-to-amber-
-to-red color transitions based on each parameter's load or status.
+Version 0.4.0 removes Demo Mode and all generated telemetry, example trip history, and sample
+health results. Landscape now uses a conventional 270-degree tachometer with ticks, a needle,
+and a large RPM readout, plus a cleaner digital speed instrument and segmented load display.
+Rounded status instruments and continuous green-to-amber-to-red transitions remain.
 
 ## Build
 
@@ -50,6 +48,5 @@ to-red color transitions based on each parameter's load or status.
 2. Run `gradlew.bat testDebugUnitTest assembleDebug`.
 3. Install `app/build/outputs/apk/debug/app-debug.apk`.
 
-The app is currently always explicit about simulated data. Bluetooth Classic ELM327
-transport, live PID polling, Room-backed trip recording, and diagnostics are staged behind
-interfaces for the next implementation passes.
+Bluetooth Classic ELM327 transport and live standard-PID polling are implemented. Room-backed
+trip persistence and full diagnostics remain staged for later implementation.

@@ -17,10 +17,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlin.math.PI
-import kotlin.math.max
-import kotlin.math.sin
-import kotlin.random.Random
 
 class ElizabethViewModel(application: Application) : AndroidViewModel(application) {
     private val preferences = application.getSharedPreferences("elizabeth_settings", 0)
@@ -47,13 +43,11 @@ class ElizabethViewModel(application: Application) : AndroidViewModel(applicatio
     private var selectedDevice: PairedObdDevice? = null
     private var connectionJob: Job? = null
     private var pollingJob: Job? = null
-    private var demoJob: Job? = null
     private var reconnectAttempts = 0
-    private var tick = 0L
 
     @SuppressLint("MissingPermission")
     fun prepareConnection() {
-        if (state.value.connectionState != ConnectionState.DISCONNECTED || state.value.isSimulated) {
+        if (state.value.connectionState != ConnectionState.DISCONNECTED) {
             disconnect()
             return
         }
@@ -109,16 +103,13 @@ class ElizabethViewModel(application: Application) : AndroidViewModel(applicatio
     fun disconnect() {
         connectionJob?.cancel()
         pollingJob?.cancel()
-        demoJob?.cancel()
         connectionJob = null
         pollingJob = null
-        demoJob = null
         viewModelScope.launch { transport.disconnect() }
         mutableState.update {
             it.copy(
                 connectionState = ConnectionState.DISCONNECTED,
                 connectionDetail = "Disconnected",
-                isSimulated = false,
                 showDevicePicker = false,
             )
         }
@@ -126,7 +117,6 @@ class ElizabethViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun connectToSelectedDevice(reconnecting: Boolean) {
         val device = selectedDevice ?: return
-        demoJob?.cancel()
         connectionJob?.cancel()
         pollingJob?.cancel()
         connectionJob = viewModelScope.launch {
@@ -134,7 +124,6 @@ class ElizabethViewModel(application: Application) : AndroidViewModel(applicatio
                 it.copy(
                     connectionState = if (reconnecting) ConnectionState.RECONNECTING else ConnectionState.CONNECTING,
                     connectionDetail = if (reconnecting) "Reconnecting to ${device.name}…" else "Opening Bluetooth Classic connection…",
-                    isSimulated = false,
                     lastConnectionError = null,
                 )
             }
@@ -306,45 +295,6 @@ class ElizabethViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun startDemoMode() {
-        connectionJob?.cancel()
-        pollingJob?.cancel()
-        viewModelScope.launch { transport.disconnect() }
-        mutableState.update {
-            it.copy(
-                isSimulated = true,
-                connectionState = ConnectionState.CONNECTED,
-                connectionDetail = "Demo Mode · simulated data",
-                samples = emptyList(),
-                supportedPids = StandardPids.registry.map { pid -> pid.pid }.toSet(),
-                settings = it.settings.copy(demoMode = true),
-                lastConnectionError = null,
-                liveDriveStartedAtMillis = System.currentTimeMillis(),
-                liveFuelUsedLiters = 0.0,
-            )
-        }
-        startDemoStream()
-    }
-
-    fun stopDemoMode() {
-        demoJob?.cancel()
-        demoJob = null
-        mutableState.update {
-            it.copy(
-                isSimulated = false,
-                connectionState = ConnectionState.DISCONNECTED,
-                connectionDetail = "Ready to connect",
-                samples = emptyList(),
-                settings = it.settings.copy(demoMode = false),
-            )
-        }
-    }
-
-    fun setScenario(scenario: DriveScenario) {
-        if (!state.value.isSimulated) startDemoMode()
-        mutableState.update { it.copy(scenario = scenario) }
-    }
-
     fun setWindow(window: TimeWindow) = mutableState.update { it.copy(timeWindow = window) }
     fun togglePaused() = mutableState.update {
         it.copy(graphPaused = !it.graphPaused, inspectedSample = if (it.graphPaused) null else it.samples.lastOrNull())
@@ -389,64 +339,6 @@ class ElizabethViewModel(application: Application) : AndroidViewModel(applicatio
     fun toggleAutoStart() = mutableState.update {
         it.copy(settings = it.settings.copy(autoStartRecording = !it.settings.autoStartRecording))
     }
-    fun replayTrip() = startDemoMode()
-
-    private fun startDemoStream() {
-        demoJob?.cancel()
-        demoJob = viewModelScope.launch {
-            var previousTimestamp = System.currentTimeMillis()
-            while (isActive) {
-                val snapshot = state.value
-                if (!snapshot.graphPaused) {
-                    val sample = generateSample(snapshot.scenario)
-                    val now = sample.timestampMillis
-                    addSample(sample, (now - previousTimestamp) / 3_600_000.0)
-                    previousTimestamp = now
-                }
-                tick++
-                delay(250)
-            }
-        }
-    }
-
-    private fun generateSample(scenario: DriveScenario): TelemetrySample {
-        val phase = tick / 4.0
-        val wave = sin(phase * PI / 6)
-        val noise = { scale: Double -> Random.nextDouble(-scale, scale) }
-        val values = when (scenario) {
-            DriveScenario.IDLE -> ScenarioValues(760 + wave * 25, 0.0, -9.5, 5.2, 91.0, 31.0, 14.2)
-            DriveScenario.CRUISE -> ScenarioValues(1_780 + wave * 190, 92 + wave * 4, -2.2 + wave, 18 + wave * 4, 92.0, 34.0, 14.15)
-            DriveScenario.MODERATE -> ScenarioValues(2_850 + wave * 650, 72 + phase % 20, 8.2 + wave * 3, 44 + wave * 14, 93.0, 37.0, 14.1)
-            DriveScenario.HARD -> ScenarioValues(4_200 + wave * 900, 85 + phase % 35, 15.0 + wave * 2, 78 + wave * 12, 95.0, 42.0, 13.95)
-            DriveScenario.WARM_UP -> ScenarioValues(1_150 + wave * 120, 0.0, -8.2, 8 + wave * 2, max(28.0, 28 + tick * .12), 23.0, 14.3)
-            DriveScenario.HEAT_SOAK -> ScenarioValues(790 + wave * 30, 0.0, -9.0, 5.5, 98.0, 59.0, 14.05)
-            DriveScenario.LOW_VOLTAGE_START -> {
-                val starting = tick % 40 < 8
-                ScenarioValues(if (starting) 280.0 else 780.0, 0.0, -9.4, 6.0, 86.0, 30.0, if (starting) 10.6 else 14.25)
-            }
-        }
-        return TelemetrySample(
-            timestampMillis = System.currentTimeMillis(),
-            rpm = max(0.0, values.rpm + noise(15.0)),
-            speedKph = max(0.0, values.speed + noise(0.8)),
-            boostPsi = values.boost + noise(.18),
-            throttlePercent = values.throttle.coerceIn(0.0, 100.0) + noise(.35),
-            coolantC = values.coolant + noise(.15),
-            intakeC = values.intake + noise(.2),
-            shortFuelTrim = wave * 3.2 + noise(.5),
-            longFuelTrim = 2.3 + noise(.15),
-            voltage = values.voltage + noise(.025),
-            engineLoad = (values.throttle * 1.08).coerceIn(0.0, 100.0),
-            timingAdvance = 16 + wave * 6,
-            fuelRateLitersPerHour = when (scenario) {
-                DriveScenario.IDLE, DriveScenario.WARM_UP, DriveScenario.HEAT_SOAK -> 0.85 + values.engineDemand() * .01
-                DriveScenario.CRUISE -> 4.8 + wave * .7
-                DriveScenario.MODERATE -> 10.5 + wave * 2.2
-                DriveScenario.HARD -> 24.0 + wave * 5.0
-                DriveScenario.LOW_VOLTAGE_START -> if (tick % 40 < 8) 0.0 else 0.9
-            }.coerceAtLeast(0.0),
-        )
-    }
 
     private fun detectEvent(sample: TelemetrySample): TripEvent? = when {
         sample.voltage?.let { it < 11.5 } == true ->
@@ -460,15 +352,4 @@ class ElizabethViewModel(application: Application) : AndroidViewModel(applicatio
         else -> null
     }
 
-    private data class ScenarioValues(
-        val rpm: Double,
-        val speed: Double,
-        val boost: Double,
-        val throttle: Double,
-        val coolant: Double,
-        val intake: Double,
-        val voltage: Double,
-    ) {
-        fun engineDemand(): Double = throttle / 100.0
-    }
 }
