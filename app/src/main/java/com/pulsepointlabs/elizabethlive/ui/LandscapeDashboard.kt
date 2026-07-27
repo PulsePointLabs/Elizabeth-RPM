@@ -308,71 +308,312 @@ private fun FuelEconomyPanel(
             )
     }
     val economyUnit = if (units == UnitSystem.US) "MPG" else "L/100 KM"
-    val economySeverity = when (units) {
-        UnitSystem.US -> (1f - ((instantaneous ?: average ?: 25.0) / 42.0).toFloat()).coerceIn(0f, 1f)
-        UnitSystem.METRIC -> (((instantaneous ?: average ?: 8.0) - 5.0) / 12.0).toFloat().coerceIn(0f, 1f)
+    val averageSeverity = economySeverity(average, units)
+    val liveSeverity = economySeverity(instantaneous, units)
+    val averageColor = average?.let { animatedStatusColor(averageSeverity) }
+        ?: MaterialTheme.colorScheme.onSurfaceVariant
+    val liveColor = instantaneous?.let { animatedStatusColor(liveSeverity) }
+        ?: MaterialTheme.colorScheme.onSurfaceVariant
+    val averageProgress = when (units) {
+        UnitSystem.US -> ((average ?: 0.0) / 50.0).toFloat().coerceIn(0f, 1f)
+        UnitSystem.METRIC -> ((average ?: 0.0) / 20.0).toFloat().coerceIn(0f, 1f)
     }
-    val economyColor = animatedStatusColor(economySeverity)
-    val progress = when (units) {
+    val liveProgress = when (units) {
         UnitSystem.US -> ((instantaneous ?: 0.0) / 50.0).toFloat().coerceIn(0f, 1f)
         UnitSystem.METRIC -> ((instantaneous ?: 0.0) / 20.0).toFloat().coerceIn(0f, 1f)
     }
+    val distanceValue = when (units) {
+        UnitSystem.US -> (distanceKm * 0.621371192).oneDecimal()
+        UnitSystem.METRIC -> distanceKm.oneDecimal()
+    }
+    val distanceUnit = if (units == UnitSystem.US) "MI" else "KM"
+    val fuelValue = when (units) {
+        UnitSystem.US -> (fuelUsedLiters / 3.785411784).twoDecimals()
+        UnitSystem.METRIC -> fuelUsedLiters.twoDecimals()
+    }
+    val fuelUnit = if (units == UnitSystem.US) "GAL" else "L"
+    val fuelSource = when {
+        sample?.fuelRateLitersPerHour == null -> "FUEL DATA UNAVAILABLE"
+        sample.fuelRateEstimated -> "MAF ESTIMATE"
+        else -> "ECU FUEL RATE"
+    }
 
-    DashboardCard(modifier, accentColor = economyColor) {
+    DashboardCard(modifier, accentColor = averageColor) {
         Column(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 10.dp),
+            modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 9.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text(
-                "FUEL ECONOMY",
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Black,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Box(
-                modifier = Modifier.fillMaxWidth().weight(1f),
-                contentAlignment = Alignment.Center,
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        average?.oneDecimal() ?: "—",
-                        fontSize = 66.sp,
-                        lineHeight = 68.sp,
-                        fontWeight = FontWeight.Black,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        softWrap = false,
-                    )
-                    Text(
-                        "AVERAGE $economyUnit",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Black,
-                        color = economyColor,
-                    )
-                    Text(
-                        when {
-                            sample?.fuelRateLitersPerHour == null -> "FUEL DATA NOT REPORTED"
-                            sample.fuelRateEstimated -> "ESTIMATED FROM MAF"
-                            else -> "ECU-REPORTED FUEL RATE"
-                        },
-                        modifier = Modifier.padding(top = 9.dp),
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                    )
-                }
+                Text(
+                    "FUEL ECONOMY",
+                    modifier = Modifier.weight(1f),
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Black,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    fuelSource,
+                    modifier = Modifier
+                        .background(averageColor.copy(alpha = .11f), CircleShape)
+                        .padding(horizontal = 7.dp, vertical = 3.dp),
+                    fontSize = 8.sp,
+                    fontWeight = FontWeight.Black,
+                    color = averageColor,
+                    maxLines = 1,
+                )
             }
-            MetricBarBox(
-                label = "REAL TIME",
-                value = instantaneous?.let { "${it.oneDecimal()} $economyUnit" } ?: "—",
-                progress = progress,
-                color = economyColor,
+            EconomyGauge(
+                value = average,
+                unit = economyUnit,
+                progress = averageProgress,
+                color = averageColor,
+                modifier = Modifier.fillMaxWidth().weight(1f),
             )
+            LiveEconomyCard(
+                value = instantaneous?.let { "${it.oneDecimal()} $economyUnit" } ?: "—",
+                progress = liveProgress,
+                color = liveColor,
+            )
+            Spacer(Modifier.height(7.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                EconomyFact(
+                    label = "TRIP DISTANCE",
+                    value = distanceValue,
+                    unit = distanceUnit,
+                    modifier = Modifier.weight(1f),
+                )
+                EconomyFact(
+                    label = "FUEL USED",
+                    value = fuelValue,
+                    unit = fuelUnit,
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
     }
 }
+
+@Composable
+private fun EconomyGauge(
+    value: Double?,
+    unit: String,
+    progress: Float,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    val animatedProgress by animateFloatAsState(
+        targetValue = progress.coerceIn(0f, 1f),
+        animationSpec = tween(320),
+        label = "averageEconomyGauge",
+    )
+    val track = MaterialTheme.colorScheme.surfaceVariant
+    val tick = MaterialTheme.colorScheme.onSurfaceVariant
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Canvas(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 8.dp, vertical = 3.dp)) {
+            val sweep = 210f
+            val start = 165f
+            val radius = min(size.width * .43f, size.height * .78f)
+            val diameter = radius * 2f
+            val center = Offset(size.width / 2f, size.height * .88f)
+            val topLeft = Offset(center.x - diameter / 2f, center.y - diameter / 2f)
+            val stroke = 8.dp.toPx()
+            drawArc(
+                color = track,
+                startAngle = start,
+                sweepAngle = sweep,
+                useCenter = false,
+                topLeft = topLeft,
+                size = Size(diameter, diameter),
+                style = Stroke(stroke, cap = StrokeCap.Round),
+            )
+            if (value != null) {
+                drawArc(
+                    color = color,
+                    startAngle = start,
+                    sweepAngle = sweep * animatedProgress,
+                    useCenter = false,
+                    topLeft = topLeft,
+                    size = Size(diameter, diameter),
+                    style = Stroke(stroke, cap = StrokeCap.Round),
+                )
+            }
+            val outerRadius = diameter / 2f - stroke * .15f
+            repeat(11) { index ->
+                val angle = start + sweep * index / 10f
+                val radians = angle * PI / 180.0
+                val innerRadius = outerRadius - if (index % 5 == 0) 12.dp.toPx() else 7.dp.toPx()
+                drawLine(
+                    color = tick.copy(alpha = if (index % 5 == 0) .9f else .45f),
+                    start = Offset(
+                        center.x + cos(radians).toFloat() * innerRadius,
+                        center.y + sin(radians).toFloat() * innerRadius,
+                    ),
+                    end = Offset(
+                        center.x + cos(radians).toFloat() * outerRadius,
+                        center.y + sin(radians).toFloat() * outerRadius,
+                    ),
+                    strokeWidth = if (index % 5 == 0) 2.dp.toPx() else 1.dp.toPx(),
+                    cap = StrokeCap.Round,
+                )
+            }
+            if (value != null) {
+                val needleAngle = (start + sweep * animatedProgress) * PI / 180.0
+                val needleLength = outerRadius * .68f
+                drawLine(
+                    color = color,
+                    start = center,
+                    end = Offset(
+                        center.x + cos(needleAngle).toFloat() * needleLength,
+                        center.y + sin(needleAngle).toFloat() * needleLength,
+                    ),
+                    strokeWidth = 3.dp.toPx(),
+                    cap = StrokeCap.Round,
+                )
+                drawCircle(color = color, radius = 5.dp.toPx(), center = center)
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().height(45.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                value?.oneDecimal() ?: "—",
+                fontSize = 37.sp,
+                lineHeight = 38.sp,
+                fontWeight = FontWeight.Black,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                softWrap = false,
+            )
+            Spacer(Modifier.width(7.dp))
+            Column {
+                Text(
+                    "AVERAGE",
+                    fontSize = 9.sp,
+                    lineHeight = 10.sp,
+                    fontWeight = FontWeight.Black,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+                Text(
+                    unit,
+                    fontSize = 12.sp,
+                    lineHeight = 13.sp,
+                    fontWeight = FontWeight.Black,
+                    color = color,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LiveEconomyCard(
+    value: String,
+    progress: Float,
+    color: Color,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = color.copy(alpha = .09f),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Column(Modifier.padding(horizontal = 11.dp, vertical = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "REAL TIME",
+                        fontSize = 10.sp,
+                        lineHeight = 11.sp,
+                        fontWeight = FontWeight.Black,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "CURRENT EFFICIENCY",
+                        fontSize = 8.sp,
+                        lineHeight = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .72f),
+                    )
+                }
+                Text(
+                    value,
+                    fontSize = 22.sp,
+                    lineHeight = 23.sp,
+                    fontWeight = FontWeight.Black,
+                    color = color,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+            }
+            Spacer(Modifier.height(5.dp))
+            SegmentedBar(progress, color, Modifier.fillMaxWidth())
+        }
+    }
+}
+
+@Composable
+private fun EconomyFact(
+    label: String,
+    value: String,
+    unit: String,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f),
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(Modifier.padding(horizontal = 9.dp, vertical = 7.dp)) {
+            Text(
+                label,
+                fontSize = 8.sp,
+                lineHeight = 9.sp,
+                fontWeight = FontWeight.Black,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    value,
+                    fontSize = 18.sp,
+                    lineHeight = 19.sp,
+                    fontWeight = FontWeight.Black,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+                Spacer(Modifier.width(3.dp))
+                Text(
+                    unit,
+                    modifier = Modifier.padding(bottom = 1.dp),
+                    fontSize = 8.sp,
+                    fontWeight = FontWeight.Black,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+private fun economySeverity(value: Double?, units: UnitSystem): Float {
+    value ?: return 0f
+    return when (units) {
+        UnitSystem.US -> (1f - (value / 42.0).toFloat()).coerceIn(0f, 1f)
+        UnitSystem.METRIC -> ((value - 5.0) / 12.0).toFloat().coerceIn(0f, 1f)
+    }
+}
+
+private fun Double.twoDecimals(): String = String.format(Locale.US, "%.2f", this)
 
 @Composable
 private fun CenterPanel(

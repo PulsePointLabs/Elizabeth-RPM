@@ -4,10 +4,21 @@ Elizabeth Live is a private, strictly read-only Android OBD-II monitor for Eliza
 2021 Honda Accord EX-L 1.5T CVT. It is designed for a Samsung Galaxy S25 Ultra and a paired
 Vgate vLinker MC+ using Bluetooth Classic and ELM327.
 
-Current release: **v1.0.1-sensor-framing**
+Current release: **v1.0.2-landscape-economy**
 
 There are no accounts, cloud services, analytics, ads, subscriptions, actuator commands,
 DTC clearing, coding functions, ECU writes, or invented Honda commands.
+
+## Landscape fuel-economy dashboard
+
+Version 1.0.2 replaces the plain landscape fuel-economy readout with a dedicated average-economy
+dial. The value sits below the needle for clean glanceability, while the arc, ticks, and status
+color show relative economy without covering the measurement.
+
+The panel also includes a large real-time efficiency value with a segmented visual bar, plus
+compact trip-distance and fuel-used cards. Values adapt to US customary and metric units. Fuel
+provenance remains explicit as ECU-reported, MAF-estimated, or unavailable; missing fuel data is
+never displayed as zero.
 
 ## Sensor framing correction
 
