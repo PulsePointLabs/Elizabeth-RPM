@@ -9,6 +9,8 @@ class ElizabethViewModel(application: Application) : AndroidViewModel(applicatio
     val state: StateFlow<ElizabethUiState> = session.state
 
     fun prepareConnection() = session.prepareConnection()
+    fun prepareAutomaticConnectionOnOpen() = session.prepareAutomaticConnectionOnOpen()
+    fun changeAdapter() = session.changeAdapter()
     fun dismissDevicePicker() = session.dismissDevicePicker()
     fun selectDevice(device: PairedObdDevice) = session.selectDevice(device)
     fun onBluetoothPermissionDenied() = session.onBluetoothPermissionDenied()
@@ -30,5 +32,11 @@ class ElizabethViewModel(application: Application) : AndroidViewModel(applicatio
     fun setFuelPricePerGallon(price: Double) = session.setFuelPricePerGallon(price)
     fun toggleAutoStart() = session.toggleAutoStart()
     fun setOverlayEnabled(enabled: Boolean) = session.setOverlayEnabled(enabled)
+    fun toggleAutomaticConnection() = session.toggleAutomaticConnection()
+    fun toggleAutomaticTrips() = session.toggleAutomaticTrips()
+    fun setAutomaticTripEndDelay(minutes: Int) = session.setAutomaticTripEndDelay(minutes)
+    fun toggleOverlayDuringAutomaticTrips() = session.toggleOverlayDuringAutomaticTrips()
+    fun setCompanionAssociated(associated: Boolean) = session.setCompanionAssociated(associated)
+    fun rememberedDevice(): PairedObdDevice? = session.rememberedDevice()
     fun refreshDiagnostics() = session.refreshDiagnostics()
 }

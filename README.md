@@ -1,111 +1,114 @@
 # Elizabeth Live
 
-A private, read-only Android OBD-II monitor for Elizabeth, a 2021 Honda Accord EX-L 1.5T CVT.
+Elizabeth Live is a private, strictly read-only Android OBD-II monitor for Elizabeth, a
+2021 Honda Accord EX-L 1.5T CVT. It is designed for a Samsung Galaxy S25 Ultra and a paired
+Vgate vLinker MC+ using Bluetooth Classic and ELM327.
 
-Elizabeth Live is built with Kotlin, Jetpack Compose, Material 3, coroutines, StateFlow,
-Room-ready storage seams, and Compose Canvas charts. No account, cloud service, advertising,
-analytics, or vehicle write commands are present.
+Current release: **v1.0.0-drive-automation**
 
-Version 0.8.0 adds a compact Sarah Vital Signs-style floating trip overlay. A visible control on
-the Live screen handles Android's one-time display-over-other-apps permission and then shows or
-hides the pill without hidden gestures. The overlay displays average MPG as the large primary
-value, with live MPG and trip cost beside it. It can be dragged, tapped to reopen Elizabeth, or
-closed with its visible `×`. A low-priority connected-device foreground service keeps both the
-Bluetooth-backed session and overlay alive while another app such as navigation is onscreen.
-Unavailable economy remains `—`, never a fake zero.
+There are no accounts, cloud services, analytics, ads, subscriptions, actuator commands,
+DTC clearing, coding functions, ECU writes, or invented Honda commands.
 
-Version 0.7.2 corrects the live-data definitions for Elizabeth's newer Honda PCM. The vehicle
-does not answer the older single-sensor PIDs `0105`, `010F`, and `0110`; it uses the SAE J1979
-multi-sensor forms `0167` (coolant), `0168` (intake air), and `0166` (mass air flow). These
-responses begin with a sensor-support byte, so their temperature and airflow data require
-different byte positions and scaling. Elizabeth Live now polls and decodes those commands
-directly, uses `0166` for its clearly labeled MAF-based fuel estimate, and shows their sanitized
-raw replies in Health.
+## Drive automation
 
-Version 0.7.1 replaces the single-ECU assumption with automatic per-PID routing on 29-bit CAN.
-Each missing standard Mode 01 value is tried through PCM target `10`, the functional OBD address,
-and the other normal physical ECU targets `11` through `1F`. Successful routes are cached so
-steady live polling remains fast. The Health diagnostic response identifies a discovered fallback
-route, while a genuinely unanswered PID lists every route that was tried. Route changes and reads
-are serialized so live polling cannot corrupt VIN, DTC, or readiness commands. All traffic remains
-strictly read-only.
+With **Automatic connection** enabled, opening Elizabeth Live connects directly to the remembered
+adapter if it is still paired. The device picker appears only when there is no remembered adapter,
+the remembered adapter is no longer paired, or **Change adapter** is tapped. Android Companion
+Device Manager associates the selected vLinker for permitted background presence behavior.
 
-## Live OBD-II
+Connection status distinguishes the actual layer involved:
 
-Version 0.3.0 adds the first real acquisition path for a paired Vgate vLinker MC+:
+- Waiting for adapter
+- Connecting to adapter
+- Adapter connected, waiting for ignition
+- Connecting to ECU
+- Connected
+- Connected and recording
+- Reconnecting
+- Connection unavailable
 
-- Android Bluetooth runtime permission and paired-device selector
-- Bluetooth Classic RFCOMM using the standard Serial Port Profile UUID
-- Conservative ELM327 reset and initialization sequence
-- Automatic vehicle protocol selection
-- Standard Mode 01 supported-PID bitmap discovery
-- Prioritized polling for RPM, throttle, MAP, speed, temperatures, load, timing, trims,
-  voltage, barometric pressure, and fuel rate
-- Calculated boost/vacuum only when both MAP and barometric pressure are reported
-- Nullable unsupported values; `NO DATA` is never converted into a fake zero
-- Automatic reconnect attempts after a temporary transport loss
+Retries use a single connection job and ELM327 queue with exponential delays of 1, 2, 4, 8, 15,
+30, and then 60 seconds. Elizabeth never launches the phone dashboard over navigation or another
+foreground app. A quiet connected-device foreground-service notification provides an explicit
+**Open dashboard** action instead.
 
-Version 0.3.1 makes landscape a true driving surface even before connection: it always opens
-the dashboard, provides Connect/Disconnect directly in the compact header, hides Android system
-bars while active, removes portrait navigation and inset padding, and restores the normal app
-and system bars through the visible Exit dashboard control.
+### Automatic trip start
 
-## Landscape driving dashboard
+Bluetooth connection alone does not start a trip. When **Automatic trips** is enabled, one trip is
+created only after three valid RPM readings above zero arrive within five seconds. The active Room
+record is created before recording begins. Manual and automatic starts share the same lifecycle
+lock, so they cannot create duplicate trips.
 
-Rotating into landscape opens a dedicated, glanceable dashboard with oversized speed, RPM,
-calculated boost/vacuum, throttle, temperatures, voltage, fuel rate, trip time, and estimated
-trip cost. `Exit dashboard` is always visible, and the normal app shows an equally visible
-`Open driving dashboard` control after exit.
+### Automatic trip end
 
-Fuel costs use an editable local regular-gas price. Live cost accounting uses standard Mode 01
-PID `015E` when supported; unsupported values are not replaced with fake measured data. Automatic nearby pricing remains
-behind a provider interface until a reliable user-configured price source is available.
+Loss of one PID, a traffic-light stop, or a short Bluetooth interruption does not split the drive.
+When valid ECU data disappears, the active trip is held open while Elizabeth reconnects. The Live
+status and notification show the remaining grace time. The selectable delay is 1, 2, 3, or 5
+minutes; the default is 3 minutes.
 
-Version 0.4.0 removes Demo Mode and all generated telemetry, example trip history, and sample
-health results. Landscape now uses a conventional 270-degree tachometer with ticks, a needle,
-and a large RPM readout, plus a cleaner digital speed instrument and segmented load display.
-Rounded status instruments and continuous green-to-amber-to-red transitions remain.
+If RPM returns during the grace period, recording resumes under the same trip ID and a connection
+gap marker is retained. If it does not return, Elizabeth flushes and finalizes the trip at the last
+valid sample. The saved-trip notification includes distance and includes average MPG and estimated
+cost only when the necessary fuel data exists.
 
-Version 0.4.1 gives the landscape dashboard the full display by overlaying its control header.
-The header introduces itself briefly, auto-hides, and returns with a downward pull from the top
-edge; the small top-edge grabber remains visible. The calculated boost/vacuum label now uses two
-clear lines instead of truncating.
+### Persistence and recovery
 
-Version 0.5.0 adds a functional Android Auto surface using the Android for Cars App Library. The
-car host displays four stable, colored instruments for engine RPM, calculated boost/vacuum,
-coolant temperature, and control-module voltage. Values refresh from the same application-scoped
-Bluetooth/ELM327 session used by the phone, and the car screen can reconnect to the last adapter,
-start or stop a trip, and disconnect. Android Auto controls the final typography and layout; its
-template system does not permit Elizabeth Live to draw the phone dashboard's custom Canvas gauges.
+Active-trip metadata is written to Room immediately. Telemetry is buffered in small batches,
+flushed after 10 samples and at least every five seconds, and flushed before finalization or service
+shutdown. The active row retains:
 
-Version 0.6.0 keeps the immersive landscape dashboard awake and replaces the speed panel with
-average and real-time fuel economy. ECU-reported fuel rate is preferred; when it is unavailable,
-the app can clearly label and use a standard MAF-based estimate. The tachometer now places its
-label below the live value and adds visible average and maximum RPM markers. Supported-PID
-discovery also merges replies from multiple ECUs instead of trusting only the first bitmap.
+- Start and latest-sample timestamps
+- Accumulated distance and fuel
+- ECU-reported, MAF-estimated, or unavailable fuel provenance
+- Samples, events, and reconnect gaps
+- Reconnect count and grace-period state
+- Automatic and recovered-trip flags
 
-Version 0.6.1 treats the supported-PID bitmap as a hint instead of a gate. The live poller directly
-probes only the curated dashboard registry at its fast, medium, and slow rates, then confirms every
-PID that returns a real value. This recovers standard sensors that an adapter or ECU omitted from
-its bitmap without continuously polling a giant PID list.
+After process death, service recreation, an app crash, or phone restart, Elizabeth loads the
+unfinished Room row before accepting RPM start signals. It reconnects using the same trip ID. If
+the recovery window has already expired, the trip is finalized using its last valid sample rather
+than discarded. Database migration 1→2 preserves all trips saved by v0.9.0.
 
-Version 0.6.2 adds visible read-only PID diagnostics to Health. For the missing temperature and
-fuel inputs, it distinguishes a decoded value, `NO DATA`, a malformed payload, and a transport
-error while showing only a short sanitized adapter reply. The Health screen also displays the
-installed app version so vehicle reports can be tied to the exact build.
+### Automatic overlay
 
-Version 0.7.0 uses physical engine-ECU addressing when automatic detection selects ISO 15765-4
-CAN 29/500. It sends read-only requests to PCM address `18DA10F1` and accepts engine replies from
-`18DAF110`, recovering standard values that the Accord returned as `NO DATA` to functional
-broadcasts. VIN, stored/pending/permanent DTCs, emissions readiness, MIL state, and freeze-frame
-availability now refresh automatically and on demand. Both CSV buttons create real files. Graph
-smoothing, recording interval, auto-start recording, and persisted settings are fully wired.
+**Show overlay during automatic trips** uses the existing Android overlay permission. When enabled,
+the Sarah Vital Signs-style economy/cost pill appears only for an active automatic trip and hides
+when that trip finishes. Missing permission never interrupts recording and is not requested
+repeatedly. Manual overlay controls continue to work during an active trip.
 
-## Build
+## Existing surfaces
 
-1. Install Android Studio with Android SDK 36 and JDK 17.
-2. Run `gradlew.bat testDebugUnitTest assembleDebug`.
-3. Install `app/build/outputs/apk/debug/app-debug.apk`.
+- Portrait Live, Trip, Health, trip history, and saved-trip detail
+- Immersive glanceable landscape dashboard with visible exit
+- Android Auto read-only instruments and trip controls
+- Rolling Compose Canvas charts
+- VIN, DTC, emissions-readiness, and supported-PID diagnostics
+- CSV export
+- Fuel-rate provenance: Mode 01 PID `015E`, MAF estimate, or unavailable
+- New Health **Drive Automation** diagnostics for service, association, active trip, batch flush,
+  reconnect, grace, and recovery state
 
-Bluetooth Classic ELM327 transport and live standard-PID polling are implemented. Room-backed
-trip persistence and full diagnostics remain staged for later implementation.
+Unsupported values remain absent. They are never converted to zero or displayed as measured data.
+MPG and cost are not calculated when their required inputs are missing.
+
+## Build and test
+
+Requirements: Android SDK 36 and JDK 17.
+
+```powershell
+$env:JAVA_HOME = 'C:\Program Files\Android\Android Studio\jbr'
+$env:ANDROID_HOME = 'C:\Users\benja\AppData\Local\Android\Sdk'
+.\gradlew.bat testDebugUnitTest lintDebug assembleDebug bundleRelease
+```
+
+The automated suite covers ELM cleanup/parsing, standard PID formulas, fake transport behavior,
+automatic start and grace decisions, duplicate-trip prevention, incremental Room writes,
+process-recreation recovery, migration from database v1, unavailable fuel handling, automatic
+overlay policy, remembered-adapter selection, and notification actions.
+
+Install the debug APK from:
+
+`app/build/outputs/apk/debug/app-debug.apk`
+
+Real-vehicle verification still requires the paired vLinker MC+, Elizabeth with ignition/engine
+state changes, Android background restrictions, overlay permission, and the Android Auto host.

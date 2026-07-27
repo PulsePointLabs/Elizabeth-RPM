@@ -6,15 +6,22 @@ import android.app.Application
 import android.bluetooth.BluetoothManager
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
+import com.pulsepointlabs.elizabethlive.automation.AutomationDecision
+import com.pulsepointlabs.elizabethlive.automation.DriveAutomationEngine
+import com.pulsepointlabs.elizabethlive.automation.DriveAutomationService
+import com.pulsepointlabs.elizabethlive.connection.RememberedAdapterDecision
+import com.pulsepointlabs.elizabethlive.connection.RememberedAdapterPolicy
 import com.pulsepointlabs.elizabethlive.obd.elm327.Elm327Client
 import com.pulsepointlabs.elizabethlive.obd.pid.PollPriority
 import com.pulsepointlabs.elizabethlive.obd.pid.StandardPids
 import com.pulsepointlabs.elizabethlive.obd.transport.BluetoothClassicObdTransport
+import com.pulsepointlabs.elizabethlive.overlay.FloatingTripOverlayService
 import com.pulsepointlabs.elizabethlive.data.ElizabethDatabase
 import com.pulsepointlabs.elizabethlive.data.TripRepository
 import com.pulsepointlabs.elizabethlive.trip.FuelEfficiencyCalculator
 import com.pulsepointlabs.elizabethlive.trip.TripSummaryCalculator
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -25,6 +32,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class ElizabethObdSession(private val application: Application) : ObdSessionController {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -54,6 +63,22 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                         "auto_start_recording",
                         initial.settings.autoStartRecording,
                     ),
+                    automaticConnection = preferences.getBoolean(
+                        "automatic_connection",
+                        initial.settings.automaticConnection,
+                    ),
+                    automaticTrips = preferences.getBoolean(
+                        "automatic_trips",
+                        initial.settings.automaticTrips,
+                    ),
+                    automaticTripEndDelayMinutes = preferences.getInt(
+                        "automatic_trip_end_delay_minutes",
+                        initial.settings.automaticTripEndDelayMinutes,
+                    ),
+                    overlayDuringAutomaticTrips = preferences.getBoolean(
+                        "overlay_during_automatic_trips",
+                        initial.settings.overlayDuringAutomaticTrips,
+                    ),
                     overlayEnabled = preferences.getBoolean(
                         "floating_trip_overlay",
                         initial.settings.overlayEnabled,
@@ -75,7 +100,15 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
     private val tripRepository = TripRepository(ElizabethDatabase.get(application))
     private val recordedTripSamples = mutableListOf<TelemetrySample>()
     private val recordedTripEvents = mutableListOf<TripEvent>()
+    private val pendingTripSamples = mutableListOf<TelemetrySample>()
+    private val pendingTripEvents = mutableListOf<TripEvent>()
     private val lastTripEventMillis = mutableMapOf<String, Long>()
+    private val tripMutex = Mutex()
+    private val automationEngine = DriveAutomationEngine()
+    private var activeTripId: Long? = null
+    private var activeTripAutomatic = false
+    private var activeTripRecovered = false
+    private var fuelDataSource = FuelDataSource.UNAVAILABLE
     private var selectedDevice: PairedObdDevice? =
         preferences.getString("obd_device_address", null)?.let { address ->
             PairedObdDevice(
@@ -86,12 +119,26 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
     private var connectionJob: Job? = null
     private var pollingJob: Job? = null
     private var diagnosticsJob: Job? = null
-    private var reconnectAttempts = 0
+    private var reconnectJob: Job? = null
+    private var flushJob: Job? = null
+    private var graceJob: Job? = null
+    private var reconnectBackoffAttempt = 0
+    private var reconnectCount = 0
+    private var serviceRunning = false
+    private var userDisconnected = false
+    private val recoveryComplete = CompletableDeferred<Unit>()
 
     init {
         scope.launch {
             tripRepository.trips.collect { trips ->
                 mutableState.update { it.copy(savedTrips = trips) }
+            }
+        }
+        scope.launch {
+            try {
+                recoverActiveTrip()
+            } finally {
+                recoveryComplete.complete(Unit)
             }
         }
     }
@@ -102,6 +149,32 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
             disconnect()
             return
         }
+        userDisconnected = false
+        if (connectSavedDevice()) return
+        showAdapterPicker()
+    }
+
+    @SuppressLint("MissingPermission")
+    fun prepareAutomaticConnectionOnOpen() {
+        if (!state.value.settings.automaticConnection) return
+        if (
+            state.value.connectionState == ConnectionState.DISCONNECTED &&
+            connectionJob?.isActive != true &&
+            !connectSavedDevice()
+        ) {
+            showAdapterPicker()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun changeAdapter() {
+        userDisconnected = true
+        disconnectInternal(manual = true)
+        showAdapterPicker()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun showAdapterPicker() {
         val adapter = application.getSystemService(BluetoothManager::class.java)
             .adapter
         if (adapter == null) {
@@ -123,6 +196,18 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
             it.copy(
                 pairedDevices = devices,
                 showDevicePicker = true,
+                driveAutomation = it.driveAutomation.copy(
+                    phase = if (devices.isEmpty()) {
+                        DriveAutomationPhase.CONNECTION_UNAVAILABLE
+                    } else {
+                        DriveAutomationPhase.WAITING_FOR_ADAPTER
+                    },
+                    statusText = if (devices.isEmpty()) {
+                        "Connection unavailable"
+                    } else {
+                        "Select the paired vLinker"
+                    },
+                ),
                 lastConnectionError = if (devices.isEmpty()) {
                     "No paired Bluetooth devices found. Pair the vLinker MC+ in Android Settings first."
                 } else null,
@@ -133,6 +218,7 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
     fun dismissDevicePicker() = mutableState.update { it.copy(showDevicePicker = false) }
 
     fun selectDevice(device: PairedObdDevice) {
+        userDisconnected = false
         rememberDevice(device)
         mutableState.update {
             it.copy(
@@ -152,7 +238,9 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
 
     @SuppressLint("MissingPermission")
     override fun connectSavedDevice(): Boolean {
-        if (state.value.connectionState != ConnectionState.DISCONNECTED) return true
+        if (state.value.connectionState != ConnectionState.DISCONNECTED || connectionJob?.isActive == true) {
+            return true
+        }
         if (
             ContextCompat.checkSelfPermission(application, Manifest.permission.BLUETOOTH_CONNECT) !=
             PackageManager.PERMISSION_GRANTED
@@ -165,14 +253,30 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
             showConnectionError("Bluetooth is unavailable or disabled on the phone.")
             return false
         }
-        val device = selectedDevice ?: adapter.bondedDevices
-            .firstOrNull { it.name?.contains("vLinker", ignoreCase = true) == true }
-            ?.let { PairedObdDevice(it.name ?: "vLinker MC+", it.address) }
-            ?.also(::rememberDevice)
-        if (device == null) {
-            showConnectionError("Open Elizabeth Live on the phone and select the paired vLinker first.")
+        val remembered = selectedDevice
+        val decision = RememberedAdapterPolicy.resolve(
+            remembered,
+            adapter.bondedDevices.map { it.address },
+        )
+        if (decision !is RememberedAdapterDecision.Connect) {
+            mutableState.update {
+                it.copy(
+                    connectionState = ConnectionState.DISCONNECTED,
+                    connectionDetail = "Waiting for adapter",
+                    lastConnectionError = if (remembered == null) {
+                        "No remembered adapter. Tap Change adapter to select the paired vLinker."
+                    } else {
+                        "The remembered adapter is no longer paired. Tap Change adapter."
+                    },
+                    driveAutomation = it.driveAutomation.copy(
+                        phase = DriveAutomationPhase.WAITING_FOR_ADAPTER,
+                        statusText = "Waiting for adapter",
+                    ),
+                )
+            }
             return false
         }
+        val device = decision.device
         mutableState.update { it.copy(adapterName = device.name, lastConnectionError = null) }
         connectToSelectedDevice(reconnecting = false)
         return true
@@ -187,84 +291,128 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
     }
 
     override fun disconnect() {
+        userDisconnected = true
+        disconnectInternal(manual = true)
+    }
+
+    private fun disconnectInternal(manual: Boolean) {
         connectionJob?.cancel()
         pollingJob?.cancel()
         diagnosticsJob?.cancel()
+        reconnectJob?.cancel()
         connectionJob = null
         pollingJob = null
         diagnosticsJob = null
+        reconnectJob = null
         scope.launch { transport.disconnect() }
         mutableState.update {
             it.copy(
                 connectionState = ConnectionState.DISCONNECTED,
-                connectionDetail = "Disconnected",
+                connectionDetail = if (manual) "Connection unavailable" else "Waiting for adapter",
                 showDevicePicker = false,
+                driveAutomation = it.driveAutomation.copy(
+                    phase = if (manual) {
+                        DriveAutomationPhase.CONNECTION_UNAVAILABLE
+                    } else {
+                        DriveAutomationPhase.WAITING_FOR_ADAPTER
+                    },
+                    statusText = if (manual) "Connection unavailable" else "Waiting for adapter",
+                ),
             )
         }
     }
 
     private fun connectToSelectedDevice(reconnecting: Boolean) {
         val device = selectedDevice ?: return
+        if (userDisconnected) return
         connectionJob?.cancel()
         pollingJob?.cancel()
         connectionJob = scope.launch {
+            recoveryComplete.await()
             mutableState.update {
                 it.copy(
                     connectionState = if (reconnecting) ConnectionState.RECONNECTING else ConnectionState.CONNECTING,
-                    connectionDetail = if (reconnecting) "Reconnecting to ${device.name}…" else "Opening Bluetooth Classic connection…",
+                    connectionDetail = if (reconnecting) "Reconnecting to adapter" else "Connecting to adapter",
                     lastConnectionError = null,
+                    driveAutomation = it.driveAutomation.copy(
+                        phase = if (reconnecting) {
+                            DriveAutomationPhase.RECONNECTING
+                        } else {
+                            DriveAutomationPhase.CONNECTING_TO_ADAPTER
+                        },
+                        statusText = if (reconnecting) {
+                            "Connection interrupted · retrying"
+                        } else {
+                            "Connecting to adapter"
+                        },
+                    ),
                 )
             }
             val connected = transport.connect(device.address)
             if (connected.isFailure) {
                 handleConnectionFailure(
                     "Adapter connection failed: ${connected.exceptionOrNull()?.message ?: "unknown error"}",
-                    reconnecting,
+                    ignitionOff = false,
                 )
                 return@launch
+            }
+            mutableState.update {
+                it.copy(
+                    connectionDetail = "Adapter connected · connecting to ECU",
+                    driveAutomation = it.driveAutomation.copy(
+                        phase = DriveAutomationPhase.CONNECTING_TO_ECU,
+                        statusText = "Adapter connected · connecting to ECU",
+                    ),
+                )
             }
             val initialized = elm.initialize { detail ->
                 mutableState.update { it.copy(connectionDetail = detail) }
             }
             if (initialized.isFailure) {
                 transport.disconnect()
+                val reason = initialized.exceptionOrNull()?.message ?: "unknown error"
                 handleConnectionFailure(
-                    "ELM327 initialization failed: ${initialized.exceptionOrNull()?.message ?: "unknown error"}",
-                    reconnecting,
+                    "ELM327 initialization failed: $reason",
+                    ignitionOff = reason.contains("ignition", ignoreCase = true) ||
+                        reason.contains("NO DATA", ignoreCase = true),
                 )
                 return@launch
             }
             val result = initialized.getOrThrow()
-            reconnectAttempts = 0
+            reconnectBackoffAttempt = 0
             mutableState.update {
-                val autoStart = !reconnecting && it.settings.autoStartRecording
+                val confirmingRecoveredTrip =
+                    it.trip.isRecording && automationEngine.graceStartedAtMillis != null
                 it.copy(
                     connectionState = ConnectionState.CONNECTED,
-                    connectionDetail = "${result.protocolName} · ${result.supportedPids.size} PIDs reported",
+                    connectionDetail = if (confirmingRecoveredTrip) {
+                        "ECU connected · confirming engine"
+                    } else if (it.trip.isRecording) {
+                        "Elizabeth connected · trip recording"
+                    } else {
+                        "Connected"
+                    },
                     supportedPids = result.supportedPids,
                     pidDiagnostics = emptyMap(),
                     diagnostics = VehicleDiagnostics(),
                     protocolName = result.protocolName,
                     lastConnectionError = null,
-                    liveDriveStartedAtMillis = if (reconnecting) {
-                        it.liveDriveStartedAtMillis
-                    } else {
-                        System.currentTimeMillis()
-                    },
-                    liveFuelUsedLiters = if (reconnecting) it.liveFuelUsedLiters else 0.0,
-                    liveDistanceKm = if (reconnecting) it.liveDistanceKm else 0.0,
-                    samples = if (autoStart) emptyList() else it.samples,
-                    trip = if (autoStart) {
-                        recordedTripSamples.clear()
-                        recordedTripEvents.clear()
-                        lastTripEventMillis.clear()
-                        TripSummary(
-                            isRecording = true,
-                            startedAtMillis = System.currentTimeMillis(),
-                        )
-                    } else {
-                        it.trip
-                    },
+                    driveAutomation = it.driveAutomation.copy(
+                        phase = if (confirmingRecoveredTrip) {
+                            DriveAutomationPhase.HOLDING_TRIP
+                        } else if (it.trip.isRecording) {
+                            DriveAutomationPhase.RECORDING
+                        } else {
+                            DriveAutomationPhase.CONNECTED
+                        },
+                        statusText = if (confirmingRecoveredTrip) {
+                            "ECU connected · confirming engine"
+                        } else if (it.trip.isRecording) {
+                            "Elizabeth connected · trip recording"
+                        } else {
+                            "Connected"
+                        },
+                    ),
                 )
             }
             startPolling()
@@ -291,6 +439,7 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
             var cycle = 0
             var mediumIndex = 0
             var consecutiveFailures = 0
+            var missingRpmCycles = 0
             var previousTimestamp = System.currentTimeMillis()
 
             while (isActive) {
@@ -306,6 +455,7 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                 for (definition in batch) {
                     val result = elm.readObserved(definition)
                     if (result.isFailure) {
+                        values.remove(definition.pid)
                         consecutiveFailures++
                         updatePidDiagnostic(
                             definition.pid,
@@ -333,7 +483,10 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                                 value = observation.value,
                             ),
                         )
-                        observation.value?.let { value ->
+                        if (observation.value == null) {
+                            values.remove(definition.pid)
+                        } else {
+                            val value = observation.value
                             values[definition.pid] = value
                             mutableState.update {
                                 if (definition.pid in it.supportedPids) {
@@ -376,6 +529,13 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                     commandedEquivalenceRatio = equivalenceRatio,
                     fuelRateEstimated = reportedFuelRate == null && estimatedFuelRate != null,
                 )
+                if (sample.rpm != null && sample.rpm > 0.0) {
+                    missingRpmCycles = 0
+                    handleValidRpm(sample.rpm)
+                } else {
+                    missingRpmCycles++
+                    if (missingRpmCycles >= 3) markEcuUnavailable()
+                }
                 val recordingInterval = state.value.settings.recordingIntervalMillis
                 if (now - previousTimestamp >= recordingInterval) {
                     val elapsedHours = (now - previousTimestamp).coerceAtLeast(0L) / 3_600_000.0
@@ -453,17 +613,10 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
 
     private fun beginReconnect() {
         pollingJob?.cancel()
-        reconnectAttempts = 0
         scope.launch {
-            mutableState.update {
-                it.copy(
-                    connectionState = ConnectionState.RECONNECTING,
-                    connectionDetail = "Connection lost · retrying automatically…",
-                )
-            }
+            markEcuUnavailable()
             transport.disconnect()
-            delay(1_500)
-            connectToSelectedDevice(reconnecting = true)
+            scheduleReconnect("Connection interrupted", ignitionOff = false)
         }
     }
 
@@ -477,10 +630,19 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
         event?.let { lastTripEventMillis[it.label] = sample.timestampMillis }
         if (state.value.trip.isRecording) {
             recordedTripSamples += sample
+            pendingTripSamples += sample
+            fuelDataSource = when {
+                sample.fuelRateLitersPerHour == null -> fuelDataSource
+                !sample.fuelRateEstimated -> FuelDataSource.ECU_REPORTED
+                fuelDataSource != FuelDataSource.ECU_REPORTED -> FuelDataSource.MAF_ESTIMATED
+                else -> fuelDataSource
+            }
             event?.let {
                 recordedTripEvents += it
+                pendingTripEvents += it
                 if (recordedTripEvents.size > 500) recordedTripEvents.removeAt(0)
             }
+            if (pendingTripSamples.size >= FLUSH_SAMPLE_BATCH_SIZE) requestTripFlush()
         }
         mutableState.update {
             it.copy(
@@ -492,35 +654,51 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                 trip = if (it.trip.isRecording && event != null) {
                     it.trip.copy(events = recordedTripEvents.takeLast(50))
                 } else it.trip,
+                driveAutomation = it.driveAutomation.copy(
+                    lastSampleMillis = sample.timestampMillis,
+                    pendingSamples = pendingTripSamples.size,
+                ),
             )
         }
     }
 
-    private fun failConnection(message: String) {
-        mutableState.update {
-            it.copy(
-                connectionState = ConnectionState.DISCONNECTED,
-                connectionDetail = "Connection failed",
-                lastConnectionError = message,
-            )
-        }
+    private fun handleConnectionFailure(message: String, ignitionOff: Boolean) {
+        if (state.value.trip.isRecording) markEcuUnavailable()
+        scheduleReconnect(message, ignitionOff)
     }
 
-    private fun handleConnectionFailure(message: String, reconnecting: Boolean) {
-        if (!reconnecting || reconnectAttempts >= 3) {
-            failConnection(message)
-            return
-        }
-        reconnectAttempts++
+    private fun scheduleReconnect(message: String, ignitionOff: Boolean) {
+        if (userDisconnected) return
+        reconnectJob?.cancel()
+        reconnectCount++
+        val delayMillis = ReconnectBackoffMillis[
+            reconnectBackoffAttempt.coerceAtMost(ReconnectBackoffMillis.lastIndex)
+        ]
+        reconnectBackoffAttempt++
         mutableState.update {
+            val holding = it.trip.isRecording && automationEngine.graceStartedAtMillis != null
+            val status = when {
+                holding -> "Connection interrupted · holding trip open"
+                ignitionOff -> "Adapter connected · waiting for ignition"
+                else -> "Connection interrupted · retrying"
+            }
             it.copy(
                 connectionState = ConnectionState.RECONNECTING,
-                connectionDetail = "Reconnect attempt $reconnectAttempts of 3…",
+                connectionDetail = status,
                 lastConnectionError = message,
+                driveAutomation = it.driveAutomation.copy(
+                    phase = when {
+                        holding -> DriveAutomationPhase.HOLDING_TRIP
+                        ignitionOff -> DriveAutomationPhase.WAITING_FOR_IGNITION
+                        else -> DriveAutomationPhase.RECONNECTING
+                    },
+                    statusText = status,
+                    reconnectCount = reconnectCount,
+                ),
             )
         }
-        scope.launch {
-            delay(1_000L * reconnectAttempts)
+        reconnectJob = scope.launch {
+            delay(delayMillis)
             connectToSelectedDevice(reconnecting = true)
         }
     }
@@ -541,62 +719,370 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
         it.copy(selectedChannels = changed)
     }
     override fun toggleTrip() {
-        val current = state.value
-        if (!current.trip.isRecording) {
-            val startedAt = System.currentTimeMillis()
-            recordedTripSamples.clear()
-            recordedTripEvents.clear()
-            lastTripEventMillis.clear()
+        scope.launch {
+            if (state.value.trip.isRecording) {
+                if (automationEngine.manualStop(hasActiveTrip = true) == AutomationDecision.FINALIZE_TRIP) {
+                    finalizeActiveTrip()
+                }
+            } else if (
+                automationEngine.manualStart(hasActiveTrip = activeTripId != null) ==
+                AutomationDecision.START_MANUAL_TRIP
+            ) {
+                startActiveTrip(automatic = false, startedAtMillis = System.currentTimeMillis())
+            }
+        }
+    }
+
+    private fun handleValidRpm(rpm: Double) {
+        when (
+            automationEngine.onRpm(
+                rpm = rpm,
+                hasActiveTrip = activeTripId != null,
+                automaticTripsEnabled = state.value.settings.automaticTrips,
+            )
+        ) {
+            AutomationDecision.START_AUTOMATIC_TRIP -> scope.launch {
+                startActiveTrip(
+                    automatic = true,
+                    startedAtMillis = automationEngine.confirmedStartMillis ?: System.currentTimeMillis(),
+                )
+            }
+            AutomationDecision.RESUME_TRIP -> {
+                graceJob?.cancel()
+                val event = TripEvent(System.currentTimeMillis(), "Connection restored", "Trip continued after ECU gap")
+                recordedTripEvents += event
+                pendingTripEvents += event
+                mutableState.update {
+                    it.copy(
+                        connectionDetail = "Elizabeth connected · trip recording",
+                        driveAutomation = it.driveAutomation.copy(
+                            phase = DriveAutomationPhase.RECORDING,
+                            statusText = "Elizabeth connected · trip recording",
+                            graceStartedAtMillis = null,
+                            graceEndsAtMillis = null,
+                        ),
+                    )
+                }
+                requestTripFlush()
+            }
+            else -> Unit
+        }
+    }
+
+    private fun markEcuUnavailable() {
+        val decision = automationEngine.onEcuUnavailable(hasActiveTrip = activeTripId != null)
+        if (decision == AutomationDecision.HOLD_TRIP_OPEN) {
+            val started = automationEngine.graceStartedAtMillis ?: return
+            val ends = started + gracePeriodMillis()
+            val event = TripEvent(started, "Connection gap", "ECU unavailable · trip held open")
+            recordedTripEvents += event
+            pendingTripEvents += event
             mutableState.update {
                 it.copy(
-                    liveDriveStartedAtMillis = startedAt,
+                    connectionDetail = "ECU unavailable · holding trip open",
+                    driveAutomation = it.driveAutomation.copy(
+                        phase = DriveAutomationPhase.HOLDING_TRIP,
+                        statusText = "ECU unavailable · holding trip open",
+                        graceStartedAtMillis = started,
+                        graceEndsAtMillis = ends,
+                    ),
+                )
+            }
+            requestTripFlush()
+            startGraceCountdown()
+        } else if (activeTripId == null && state.value.connectionState == ConnectionState.CONNECTED) {
+            mutableState.update {
+                it.copy(
+                    connectionDetail = "Adapter connected · waiting for ignition",
+                    driveAutomation = it.driveAutomation.copy(
+                        phase = DriveAutomationPhase.WAITING_FOR_IGNITION,
+                        statusText = "Adapter connected · waiting for ignition",
+                    ),
+                )
+            }
+        }
+    }
+
+    private suspend fun startActiveTrip(automatic: Boolean, startedAtMillis: Long) {
+        recoveryComplete.await()
+        tripMutex.withLock {
+            if (activeTripId != null || state.value.trip.isRecording) return
+            val tripId = tripRepository.beginActive(startedAtMillis, automatic)
+            activeTripId = tripId
+            activeTripAutomatic = automatic
+            activeTripRecovered = false
+            fuelDataSource = FuelDataSource.UNAVAILABLE
+            recordedTripSamples.clear()
+            recordedTripEvents.clear()
+            pendingTripSamples.clear()
+            pendingTripEvents.clear()
+            lastTripEventMillis.clear()
+            reconnectCount = 0
+            automationEngine.clearTripState()
+            mutableState.update {
+                it.copy(
+                    liveDriveStartedAtMillis = startedAtMillis,
                     liveFuelUsedLiters = 0.0,
                     liveDistanceKm = 0.0,
                     samples = emptyList(),
                     selectedTrip = null,
-                    trip = TripSummary(isRecording = true, startedAtMillis = startedAt),
+                    trip = TripSummary(isRecording = true, startedAtMillis = startedAtMillis),
+                    driveAutomation = it.driveAutomation.copy(
+                        phase = DriveAutomationPhase.RECORDING,
+                        statusText = "Elizabeth connected · trip recording",
+                        activeTripId = tripId,
+                        activeTripAutomatic = automatic,
+                        lastSampleMillis = null,
+                        pendingSamples = 0,
+                        reconnectCount = 0,
+                        graceStartedAtMillis = null,
+                        graceEndsAtMillis = null,
+                        recoveredAfterProcessDeath = false,
+                    ),
                 )
             }
-            return
+            startPeriodicFlush()
+            if (
+                automatic &&
+                state.value.settings.overlayDuringAutomaticTrips &&
+                FloatingTripOverlayService.canStart(application)
+            ) {
+                FloatingTripOverlayService.startAutomatic(application)
+            }
         }
+    }
 
-        val endedAt = System.currentTimeMillis()
-        val completed = TripSummaryCalculator.summarize(
+    private suspend fun finalizeActiveTrip(endAtMillis: Long? = null) {
+        tripMutex.withLock {
+            val tripId = activeTripId ?: return
+            flushActiveTripLocked()
+            val current = state.value
+            val endedAt = endAtMillis
+                ?: recordedTripSamples.lastOrNull()?.timestampMillis
+                ?: System.currentTimeMillis()
+            val completed = TripSummaryCalculator.summarize(
+                startedAtMillis = current.trip.startedAtMillis,
+                samples = recordedTripSamples.toList(),
+                events = recordedTripEvents.toList(),
+                fuelUsedLiters = current.liveFuelUsedLiters,
+                isRecording = false,
+                endedAtMillis = endedAt,
+            )
+            tripRepository.finalizeActive(
+                tripId = tripId,
+                summary = completed,
+                endedAtMillis = endedAt,
+                lastSampleMillis = recordedTripSamples.lastOrNull()?.timestampMillis,
+                fuelDataSource = fuelDataSource.name,
+                reconnectCount = reconnectCount,
+                recovered = activeTripRecovered,
+            )
+            activeTripId = null
+            activeTripAutomatic = false
+            flushJob?.cancel()
+            graceJob?.cancel()
+            automationEngine.clearTripState()
+            mutableState.update {
+                it.copy(
+                    trip = completed,
+                    tripHistoryLoading = false,
+                    connectionDetail = if (it.connectionState == ConnectionState.CONNECTED) {
+                        "Connected"
+                    } else {
+                        "Trip saved"
+                    },
+                    driveAutomation = it.driveAutomation.copy(
+                        phase = if (it.connectionState == ConnectionState.CONNECTED) {
+                            DriveAutomationPhase.CONNECTED
+                        } else {
+                            DriveAutomationPhase.WAITING_FOR_ADAPTER
+                        },
+                        statusText = "Trip saved",
+                        activeTripId = null,
+                        activeTripAutomatic = false,
+                        pendingSamples = 0,
+                        graceStartedAtMillis = null,
+                        graceEndsAtMillis = null,
+                        recoveredAfterProcessDeath = false,
+                        lastSavedTripId = tripId,
+                        lastSavedAtMillis = System.currentTimeMillis(),
+                    ),
+                )
+            }
+            FloatingTripOverlayService.stopAutomatic(application)
+        }
+    }
+
+    private fun requestTripFlush() {
+        if (activeTripId == null) return
+        scope.launch { flushActiveTrip() }
+    }
+
+    private suspend fun flushActiveTrip() {
+        tripMutex.withLock { flushActiveTripLocked() }
+    }
+
+    private suspend fun flushActiveTripLocked() {
+        val tripId = activeTripId ?: return
+        val samples = pendingTripSamples.toList()
+        val events = pendingTripEvents.toList()
+        val current = state.value
+        val summary = TripSummaryCalculator.summarize(
             startedAtMillis = current.trip.startedAtMillis,
             samples = recordedTripSamples.toList(),
             events = recordedTripEvents.toList(),
             fuelUsedLiters = current.liveFuelUsedLiters,
-            isRecording = false,
-            endedAtMillis = endedAt,
+            isRecording = true,
         )
-        mutableState.update { it.copy(trip = completed, tripHistoryLoading = true) }
-        scope.launch {
-            runCatching {
-                tripRepository.save(
-                    summary = completed,
-                    endedAtMillis = endedAt,
-                    samples = recordedTripSamples.toList(),
-                )
-            }.onSuccess { tripId ->
-                selectTrip(tripId)
-            }.onFailure { error ->
+        tripRepository.flushActive(
+            tripId = tripId,
+            summary = summary,
+            samples = samples,
+            events = events,
+            lastSampleMillis = recordedTripSamples.lastOrNull()?.timestampMillis,
+            fuelDataSource = fuelDataSource.name,
+            reconnectCount = reconnectCount,
+            graceStartedAtMillis = automationEngine.graceStartedAtMillis,
+            recovered = activeTripRecovered,
+        )
+        pendingTripSamples.removeAll(samples.toSet())
+        pendingTripEvents.removeAll(events.toSet())
+        val flushedAt = System.currentTimeMillis()
+        mutableState.update {
+            it.copy(
+                driveAutomation = it.driveAutomation.copy(
+                    pendingSamples = pendingTripSamples.size,
+                    lastFlushMillis = flushedAt,
+                    lastSampleMillis = recordedTripSamples.lastOrNull()?.timestampMillis,
+                ),
+            )
+        }
+    }
+
+    private fun startPeriodicFlush() {
+        flushJob?.cancel()
+        flushJob = scope.launch {
+            while (isActive && activeTripId != null) {
+                delay(FLUSH_INTERVAL_MILLIS)
+                flushActiveTrip()
+            }
+        }
+    }
+
+    private fun startGraceCountdown() {
+        graceJob?.cancel()
+        graceJob = scope.launch {
+            while (isActive && activeTripId != null && automationEngine.graceStartedAtMillis != null) {
+                if (
+                    automationEngine.tick(
+                        hasActiveTrip = true,
+                        gracePeriodMillis = gracePeriodMillis(),
+                    ) == AutomationDecision.FINALIZE_TRIP
+                ) {
+                    val lastValid = recordedTripSamples.lastOrNull()?.timestampMillis
+                    finalizeActiveTrip(lastValid)
+                    return@launch
+                }
+                val ends = (automationEngine.graceStartedAtMillis ?: break) + gracePeriodMillis()
+                val remaining = (ends - System.currentTimeMillis()).coerceAtLeast(0L)
                 mutableState.update {
                     it.copy(
-                        tripHistoryLoading = false,
-                        lastConnectionError = "Trip could not be saved: ${error.message ?: "database error"}",
+                        connectionDetail = "Engine off · saving trip in ${formatCountdown(remaining)}",
+                        driveAutomation = it.driveAutomation.copy(
+                            phase = DriveAutomationPhase.HOLDING_TRIP,
+                            statusText = "Engine off · saving trip in ${formatCountdown(remaining)}",
+                            graceEndsAtMillis = ends,
+                        ),
+                    )
+                }
+                delay(1_000)
+            }
+        }
+    }
+
+    private suspend fun recoverActiveTrip() {
+        val recovered = tripRepository.loadActive() ?: return
+        tripMutex.withLock {
+            activeTripId = recovered.trip.id
+            activeTripAutomatic = recovered.trip.isAutomatic
+            activeTripRecovered = true
+            fuelDataSource = runCatching {
+                FuelDataSource.valueOf(recovered.trip.fuelDataSource)
+            }.getOrDefault(FuelDataSource.UNAVAILABLE)
+            reconnectCount = recovered.trip.reconnectCount
+            recordedTripSamples.clear()
+            recordedTripSamples.addAll(recovered.samples)
+            recordedTripEvents.clear()
+            recordedTripEvents.addAll(recovered.events)
+            val recoveryGraceStartedAt = recovered.trip.graceStartedAtMillis
+                ?: recovered.trip.lastSampleMillis
+                ?: System.currentTimeMillis()
+            automationEngine.restoreGracePeriod(recoveryGraceStartedAt)
+            val summary = recovered.summary.copy(isRecording = true, events = recovered.events)
+            mutableState.update {
+                it.copy(
+                    trip = summary,
+                    samples = recovered.samples.takeLast(2_400),
+                    liveDriveStartedAtMillis = recovered.trip.startedAtMillis,
+                    liveFuelUsedLiters = recovered.trip.fuelUsedLiters,
+                    liveDistanceKm = recovered.trip.distanceKm,
+                    driveAutomation = it.driveAutomation.copy(
+                        phase = DriveAutomationPhase.HOLDING_TRIP,
+                        statusText = "Recovered trip · reconnecting and holding trip open",
+                        activeTripId = recovered.trip.id,
+                        activeTripAutomatic = recovered.trip.isAutomatic,
+                        lastSampleMillis = recovered.trip.lastSampleMillis,
+                        reconnectCount = recovered.trip.reconnectCount,
+                        graceStartedAtMillis = recoveryGraceStartedAt,
+                        graceEndsAtMillis = recoveryGraceStartedAt.plus(gracePeriodMillis()),
+                        recoveredAfterProcessDeath = true,
+                    ),
+                )
+            }
+            startPeriodicFlush()
+            startGraceCountdown()
+        }
+    }
+
+    private fun gracePeriodMillis(): Long =
+        state.value.settings.automaticTripEndDelayMinutes * 60_000L
+
+    private fun formatCountdown(remainingMillis: Long): String {
+        val seconds = remainingMillis / 1_000L
+        return "%d:%02d".format(seconds / 60, seconds % 60)
+    }
+    fun deleteTrip() {
+        scope.launch {
+            tripMutex.withLock {
+                activeTripId?.let { tripRepository.delete(it) }
+                activeTripId = null
+                activeTripAutomatic = false
+                recordedTripSamples.clear()
+                recordedTripEvents.clear()
+                pendingTripSamples.clear()
+                pendingTripEvents.clear()
+                flushJob?.cancel()
+                graceJob?.cancel()
+                automationEngine.clearTripState()
+                mutableState.update {
+                    it.copy(
+                        trip = TripSummary(),
+                        samples = emptyList(),
+                        liveFuelUsedLiters = 0.0,
+                        liveDistanceKm = 0.0,
+                        liveDriveStartedAtMillis = System.currentTimeMillis(),
+                        driveAutomation = it.driveAutomation.copy(
+                            activeTripId = null,
+                            activeTripAutomatic = false,
+                            pendingSamples = 0,
+                            graceStartedAtMillis = null,
+                            graceEndsAtMillis = null,
+                            recoveredAfterProcessDeath = false,
+                        ),
                     )
                 }
             }
         }
-    }
-    fun deleteTrip() = mutableState.update {
-        it.copy(
-            trip = TripSummary(),
-            samples = emptyList(),
-            liveFuelUsedLiters = 0.0,
-            liveDistanceKm = 0.0,
-            liveDriveStartedAtMillis = System.currentTimeMillis(),
-        )
     }
 
     fun selectTrip(tripId: Long) {
@@ -660,10 +1146,101 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
         it.copy(settings = it.settings.copy(autoStartRecording = autoStart))
     }
 
+    fun toggleAutomaticConnection() {
+        val enabled = !state.value.settings.automaticConnection
+        preferences.edit().putBoolean("automatic_connection", enabled).apply()
+        mutableState.update {
+            it.copy(settings = it.settings.copy(automaticConnection = enabled))
+        }
+        if (enabled) {
+            userDisconnected = false
+            if (
+                ContextCompat.checkSelfPermission(application, Manifest.permission.BLUETOOTH_CONNECT) ==
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                DriveAutomationService.start(application)
+            } else {
+                showConnectionError("Bluetooth permission is required for automatic connection.")
+            }
+        } else if (!enabled && !state.value.trip.isRecording) {
+            disconnectInternal(manual = true)
+        }
+    }
+
+    fun toggleAutomaticTrips() {
+        val enabled = !state.value.settings.automaticTrips
+        preferences.edit().putBoolean("automatic_trips", enabled).apply()
+        mutableState.update { it.copy(settings = it.settings.copy(automaticTrips = enabled)) }
+    }
+
+    fun setAutomaticTripEndDelay(minutes: Int) {
+        val safe = minutes.takeIf { it in setOf(1, 2, 3, 5) } ?: 3
+        preferences.edit().putInt("automatic_trip_end_delay_minutes", safe).apply()
+        mutableState.update {
+            it.copy(settings = it.settings.copy(automaticTripEndDelayMinutes = safe))
+        }
+        if (automationEngine.graceStartedAtMillis != null) startGraceCountdown()
+    }
+
+    fun toggleOverlayDuringAutomaticTrips() {
+        val enabled = !state.value.settings.overlayDuringAutomaticTrips
+        preferences.edit().putBoolean("overlay_during_automatic_trips", enabled).apply()
+        mutableState.update {
+            it.copy(settings = it.settings.copy(overlayDuringAutomaticTrips = enabled))
+        }
+        if (
+            enabled &&
+            activeTripAutomatic &&
+            state.value.trip.isRecording &&
+            FloatingTripOverlayService.canStart(application)
+        ) {
+            FloatingTripOverlayService.startAutomatic(application)
+        } else if (!enabled && !state.value.settings.overlayEnabled) {
+            FloatingTripOverlayService.stop(application)
+        }
+    }
+
     fun setOverlayEnabled(enabled: Boolean) {
         preferences.edit().putBoolean("floating_trip_overlay", enabled).apply()
         mutableState.update { it.copy(settings = it.settings.copy(overlayEnabled = enabled)) }
     }
+
+    fun startDriveAutomation() {
+        serviceRunning = true
+        mutableState.update {
+            it.copy(
+                driveAutomation = it.driveAutomation.copy(backgroundServiceRunning = true),
+            )
+        }
+        if (state.value.settings.automaticConnection || activeTripId != null) {
+            userDisconnected = false
+            connectSavedDevice()
+        }
+    }
+
+    fun stopDriveAutomation() {
+        serviceRunning = false
+        mutableState.update {
+            it.copy(
+                driveAutomation = it.driveAutomation.copy(backgroundServiceRunning = false),
+            )
+        }
+        requestTripFlush()
+    }
+
+    fun stopTripFromNotification() {
+        if (state.value.trip.isRecording) toggleTrip()
+    }
+
+    fun setCompanionAssociated(associated: Boolean) {
+        mutableState.update {
+            it.copy(
+                driveAutomation = it.driveAutomation.copy(companionAssociated = associated),
+            )
+        }
+    }
+
+    fun rememberedDevice(): PairedObdDevice? = selectedDevice
 
     private fun detectEvent(sample: TelemetrySample): TripEvent? = when {
         sample.voltage?.let { it < 11.5 } == true ->
@@ -695,5 +1272,8 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
 
     private companion object {
         val DiagnosticPids = setOf(0x05, 0x0F, 0x10, 0x44, 0x5E, 0x66, 0x67, 0x68)
+        val ReconnectBackoffMillis = listOf(1_000L, 2_000L, 4_000L, 8_000L, 15_000L, 30_000L, 60_000L)
+        const val FLUSH_SAMPLE_BATCH_SIZE = 10
+        const val FLUSH_INTERVAL_MILLIS = 5_000L
     }
 }

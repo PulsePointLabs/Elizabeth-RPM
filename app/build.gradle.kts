@@ -13,8 +13,8 @@ android {
         applicationId = "com.pulsepointlabs.elizabethlive"
         minSdk = 31
         targetSdk = 36
-        versionCode = 16
-        versionName = "0.9.0-trip-history-dashboard"
+        versionCode = 17
+        versionName = "1.0.0-drive-automation"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
@@ -45,6 +45,13 @@ android {
     }
     testOptions.unitTests.isIncludeAndroidResources = true
     packaging.resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+    sourceSets["androidTest"].assets.srcDir("$projectDir/schemas")
+    sourceSets["debug"].assets.srcDir("$projectDir/schemas")
+    sourceSets["test"].resources.srcDir("$projectDir/schemas")
+}
+
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 dependencies {
@@ -73,6 +80,8 @@ dependencies {
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
     testImplementation("androidx.car.app:app-testing:1.7.0")
     testImplementation("androidx.test:core:1.6.1")
+    testImplementation("androidx.test:runner:1.6.2")
+    testImplementation("androidx.room:room-testing:2.7.2")
     testImplementation("org.robolectric:robolectric:4.14.1")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")

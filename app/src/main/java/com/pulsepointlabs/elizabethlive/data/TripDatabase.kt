@@ -12,6 +12,9 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.Update
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.room.withTransaction
 import com.pulsepointlabs.elizabethlive.SavedTrip
 import com.pulsepointlabs.elizabethlive.SavedTripSummary
@@ -42,6 +45,13 @@ data class TripEntity(
     val maximumFuelTrim: Double?,
     val minimumVoltage: Double?,
     val fuelUsedLiters: Double,
+    val status: String = "COMPLETED",
+    val isAutomatic: Boolean = false,
+    val wasRecovered: Boolean = false,
+    val lastSampleMillis: Long? = null,
+    val fuelDataSource: String = "UNAVAILABLE",
+    val reconnectCount: Int = 0,
+    val graceStartedAtMillis: Long? = null,
 )
 
 @Entity(
@@ -99,8 +109,11 @@ data class TripEventEntity(
 
 @Dao
 interface TripDao {
-    @Query("SELECT * FROM trips ORDER BY startedAtMillis DESC")
+    @Query("SELECT * FROM trips WHERE status = 'COMPLETED' ORDER BY startedAtMillis DESC")
     fun observeTrips(): Flow<List<TripEntity>>
+
+    @Query("SELECT * FROM trips WHERE status = 'ACTIVE' ORDER BY startedAtMillis DESC LIMIT 1")
+    suspend fun getActiveTrip(): TripEntity?
 
     @Query("SELECT * FROM trips WHERE id = :tripId")
     suspend fun getTrip(tripId: Long): TripEntity?
@@ -114,6 +127,9 @@ interface TripDao {
     @Insert
     suspend fun insertTrip(trip: TripEntity): Long
 
+    @Update
+    suspend fun updateTrip(trip: TripEntity)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSamples(samples: List<TripSampleEntity>)
 
@@ -122,12 +138,15 @@ interface TripDao {
 
     @Query("DELETE FROM trips WHERE id = :tripId")
     suspend fun deleteTrip(tripId: Long)
+
+    @Query("SELECT COUNT(*) FROM trip_samples WHERE tripId = :tripId")
+    suspend fun sampleCount(tripId: Long): Int
 }
 
 @Database(
     entities = [TripEntity::class, TripSampleEntity::class, TripEventEntity::class],
-    version = 1,
-    exportSchema = false,
+    version = 2,
+    exportSchema = true,
 )
 abstract class ElizabethDatabase : RoomDatabase() {
     abstract fun tripDao(): TripDao
@@ -141,10 +160,32 @@ abstract class ElizabethDatabase : RoomDatabase() {
                     context.applicationContext,
                     ElizabethDatabase::class.java,
                     "elizabeth-live.db",
-                ).build().also { instance = it }
+                )
+                    .addMigrations(MIGRATION_1_2)
+                    .build()
+                    .also { instance = it }
             }
+
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE trips ADD COLUMN status TEXT NOT NULL DEFAULT 'COMPLETED'")
+                database.execSQL("ALTER TABLE trips ADD COLUMN isAutomatic INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE trips ADD COLUMN wasRecovered INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE trips ADD COLUMN lastSampleMillis INTEGER")
+                database.execSQL("ALTER TABLE trips ADD COLUMN fuelDataSource TEXT NOT NULL DEFAULT 'UNAVAILABLE'")
+                database.execSQL("ALTER TABLE trips ADD COLUMN reconnectCount INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE trips ADD COLUMN graceStartedAtMillis INTEGER")
+            }
+        }
     }
 }
+
+data class ActiveTripRecord(
+    val trip: TripEntity,
+    val summary: TripSummary,
+    val samples: List<TelemetrySample>,
+    val events: List<TripEvent>,
+)
 
 class TripRepository(private val database: ElizabethDatabase) {
     private val dao = database.tripDao()
@@ -187,6 +228,96 @@ class TripRepository(private val database: ElizabethDatabase) {
         tripId
     }
 
+    suspend fun beginActive(startedAtMillis: Long, automatic: Boolean): Long =
+        dao.insertTrip(
+            TripEntity(
+                startedAtMillis = startedAtMillis,
+                endedAtMillis = 0,
+                durationSeconds = 0,
+                distanceKm = 0.0,
+                averageSpeedKph = 0.0,
+                maximumSpeedKph = 0.0,
+                averageRpm = 0.0,
+                maximumRpm = 0.0,
+                maximumBoostPsi = 0.0,
+                minimumCoolantC = null,
+                maximumCoolantC = null,
+                minimumIntakeC = null,
+                maximumIntakeC = null,
+                averageThrottle = 0.0,
+                minimumFuelTrim = null,
+                maximumFuelTrim = null,
+                minimumVoltage = null,
+                fuelUsedLiters = 0.0,
+                status = "ACTIVE",
+                isAutomatic = automatic,
+            )
+        )
+
+    suspend fun flushActive(
+        tripId: Long,
+        summary: TripSummary,
+        samples: List<TelemetrySample>,
+        events: List<TripEvent>,
+        lastSampleMillis: Long?,
+        fuelDataSource: String,
+        reconnectCount: Int,
+        graceStartedAtMillis: Long?,
+        recovered: Boolean,
+    ) = database.withTransaction {
+        if (samples.isNotEmpty()) dao.insertSamples(samples.map { it.toEntity(tripId) })
+        if (events.isNotEmpty()) dao.insertEvents(events.map { it.toEntity(tripId) })
+        val current = dao.getTrip(tripId) ?: return@withTransaction
+        dao.updateTrip(
+            current.withSummary(summary).copy(
+                status = "ACTIVE",
+                lastSampleMillis = lastSampleMillis,
+                fuelDataSource = fuelDataSource,
+                reconnectCount = reconnectCount,
+                graceStartedAtMillis = graceStartedAtMillis,
+                wasRecovered = current.wasRecovered || recovered,
+            )
+        )
+    }
+
+    suspend fun finalizeActive(
+        tripId: Long,
+        summary: TripSummary,
+        endedAtMillis: Long,
+        lastSampleMillis: Long?,
+        fuelDataSource: String,
+        reconnectCount: Int,
+        recovered: Boolean,
+    ) = database.withTransaction {
+        val current = dao.getTrip(tripId) ?: return@withTransaction
+        dao.updateTrip(
+            current.withSummary(summary).copy(
+                endedAtMillis = endedAtMillis,
+                status = "COMPLETED",
+                lastSampleMillis = lastSampleMillis,
+                fuelDataSource = fuelDataSource,
+                reconnectCount = reconnectCount,
+                graceStartedAtMillis = null,
+                wasRecovered = current.wasRecovered || recovered,
+            )
+        )
+    }
+
+    suspend fun loadActive(): ActiveTripRecord? = database.withTransaction {
+        val trip = dao.getActiveTrip() ?: return@withTransaction null
+        ActiveTripRecord(
+            trip = trip,
+            summary = trip.toSummary().copy(
+                isRecording = true,
+                events = dao.getEvents(trip.id).map(TripEventEntity::toEvent),
+            ),
+            samples = dao.getSamples(trip.id).map(TripSampleEntity::toSample),
+            events = dao.getEvents(trip.id).map(TripEventEntity::toEvent),
+        )
+    }
+
+    suspend fun sampleCount(tripId: Long): Int = dao.sampleCount(tripId)
+
     suspend fun load(tripId: Long): SavedTrip? = database.withTransaction {
         val trip = dao.getTrip(tripId) ?: return@withTransaction null
         SavedTrip(
@@ -201,6 +332,25 @@ class TripRepository(private val database: ElizabethDatabase) {
 
     suspend fun delete(tripId: Long) = dao.deleteTrip(tripId)
 }
+
+private fun TripEntity.withSummary(summary: TripSummary) = copy(
+    durationSeconds = summary.durationSeconds,
+    distanceKm = summary.distanceKm,
+    averageSpeedKph = summary.averageSpeedKph,
+    maximumSpeedKph = summary.maximumSpeedKph,
+    averageRpm = summary.averageRpm,
+    maximumRpm = summary.maximumRpm,
+    maximumBoostPsi = summary.maximumBoostPsi,
+    minimumCoolantC = summary.coolantRangeC.nullableMinimum(),
+    maximumCoolantC = summary.coolantRangeC.nullableMaximum(),
+    minimumIntakeC = summary.intakeRangeC.nullableMinimum(),
+    maximumIntakeC = summary.intakeRangeC.nullableMaximum(),
+    averageThrottle = summary.averageThrottle,
+    minimumFuelTrim = summary.fuelTrimRange.nullableMinimum(),
+    maximumFuelTrim = summary.fuelTrimRange.nullableMaximum(),
+    minimumVoltage = summary.minimumVoltage.takeUnless { it == 0.0 },
+    fuelUsedLiters = summary.fuelUsedLiters,
+)
 
 private fun TripEntity.toSavedSummary() = SavedTripSummary(
     id = id,

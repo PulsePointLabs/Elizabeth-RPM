@@ -3,6 +3,9 @@ package com.pulsepointlabs.elizabethlive
 import android.Manifest
 import android.content.res.Configuration
 import android.content.pm.PackageManager
+import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.os.Build
 import android.os.Bundle
 import android.net.Uri
 import android.widget.Toast
@@ -11,6 +14,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.IntentSenderRequest
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
@@ -85,6 +89,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.content.ContextCompat
 import com.pulsepointlabs.elizabethlive.ui.LandscapeDashboard
+import com.pulsepointlabs.elizabethlive.automation.DriveAutomationService
+import com.pulsepointlabs.elizabethlive.connection.CompanionDeviceCoordinator
 import com.pulsepointlabs.elizabethlive.ui.components.DualTemperatureBars
 import com.pulsepointlabs.elizabethlive.ui.components.FuelTrimBalance
 import com.pulsepointlabs.elizabethlive.ui.components.RollingTelemetryChart
@@ -101,29 +107,125 @@ import com.pulsepointlabs.elizabethlive.ui.theme.WarningRed
 import java.util.Locale
 import java.text.DateFormat
 import java.util.Date
+import kotlinx.coroutines.flow.MutableStateFlow
 
 class MainActivity : ComponentActivity() {
+    private val navigationRequest = MutableStateFlow(AppNavigationRequest())
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleIntent(intent)
         enableEdgeToEdge()
         setContent {
             val viewModel: ElizabethViewModel = viewModel()
             val state by viewModel.state.collectAsStateWithLifecycle()
+            val request by navigationRequest.collectAsStateWithLifecycle()
             ElizabethTheme(state.settings.theme) {
-                ElizabethApp(state, viewModel)
+                ElizabethApp(state, viewModel, request) {
+                    navigationRequest.value = AppNavigationRequest()
+                }
             }
         }
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        navigationRequest.value = AppNavigationRequest(
+            openDashboard = intent?.getBooleanExtra(EXTRA_OPEN_DASHBOARD, false) == true,
+            tripId = intent?.getLongExtra(EXTRA_TRIP_ID, -1L)?.takeIf { it > 0L },
+        )
+    }
+
+    companion object {
+        const val EXTRA_OPEN_DASHBOARD = "open_dashboard"
+        const val EXTRA_TRIP_ID = "trip_id"
+    }
 }
+
+private data class AppNavigationRequest(
+    val openDashboard: Boolean = false,
+    val tripId: Long? = null,
+)
 private data class Destination(val label: String, val icon: ImageVector)
 
 @Composable
-private fun ElizabethApp(state: ElizabethUiState, viewModel: ElizabethViewModel) {
+private fun ElizabethApp(
+    state: ElizabethUiState,
+    viewModel: ElizabethViewModel,
+    navigationRequest: AppNavigationRequest,
+    onNavigationConsumed: () -> Unit,
+) {
     val context = LocalContext.current
-    val bluetoothPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) viewModel.prepareConnection() else viewModel.onBluetoothPermissionDenied()
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        if (permissions[Manifest.permission.BLUETOOTH_CONNECT] == true) {
+            DriveAutomationService.start(context)
+            viewModel.prepareAutomaticConnectionOnOpen()
+        } else {
+            viewModel.onBluetoothPermissionDenied()
+        }
+    }
+    val companionCoordinator = remember { CompanionDeviceCoordinator(context) }
+    val associationLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) {
+        companionCoordinator.ensurePresenceObservation(viewModel.rememberedDevice()?.address)
+        viewModel.setCompanionAssociated(
+            companionCoordinator.isAssociated(viewModel.rememberedDevice()?.address)
+        )
+    }
+    var associationRequested by rememberSaveable(state.adapterName) { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        val required = buildList {
+            if (
+                ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) !=
+                PackageManager.PERMISSION_GRANTED
+            ) add(Manifest.permission.BLUETOOTH_CONNECT)
+            if (
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
+            ) add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        if (required.isEmpty()) {
+            DriveAutomationService.start(context)
+            viewModel.prepareAutomaticConnectionOnOpen()
+        } else {
+            permissionLauncher.launch(required.toTypedArray())
+        }
+    }
+    LaunchedEffect(state.adapterName, state.settings.automaticConnection) {
+        val device = viewModel.rememberedDevice()
+        val associated = companionCoordinator.isAssociated(device?.address)
+        viewModel.setCompanionAssociated(associated)
+        if (associated) {
+            companionCoordinator.ensurePresenceObservation(device?.address)
+        }
+        if (
+            state.settings.automaticConnection &&
+            device != null &&
+            companionCoordinator.supported &&
+            !associated &&
+            !associationRequested
+        ) {
+            associationRequested = true
+            companionCoordinator.associate(
+                device = device,
+                onConsentRequired = {
+                    associationLauncher.launch(IntentSenderRequest.Builder(it).build())
+                },
+                onAssociated = { viewModel.setCompanionAssociated(true) },
+                onFailure = { message ->
+                    Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                },
+            )
+        }
     }
     val onConnectionControl = {
         if (state.connectionState != ConnectionState.DISCONNECTED) {
@@ -134,7 +236,7 @@ private fun ElizabethApp(state: ElizabethUiState, viewModel: ElizabethViewModel)
         ) {
             viewModel.prepareConnection()
         } else {
-            bluetoothPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+            permissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_CONNECT))
         }
     }
     val destinations = listOf(
@@ -144,6 +246,23 @@ private fun ElizabethApp(state: ElizabethUiState, viewModel: ElizabethViewModel)
     )
     var selected by rememberSaveable { mutableIntStateOf(0) }
     var dashboardDismissed by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(navigationRequest) {
+        when {
+            navigationRequest.tripId != null -> {
+                selected = 1
+                viewModel.selectTrip(navigationRequest.tripId)
+            }
+            navigationRequest.openDashboard -> {
+                selected = 0
+                dashboardDismissed = false
+                (context as? android.app.Activity)?.requestedOrientation =
+                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            }
+        }
+        if (navigationRequest.openDashboard || navigationRequest.tripId != null) {
+            onNavigationConsumed()
+        }
+    }
     LaunchedEffect(state.settings.overlayEnabled) {
         if (
             state.settings.overlayEnabled &&
@@ -262,10 +381,15 @@ private fun PairedDeviceDialog(
 
 @Composable
 private fun ConnectionHeader(state: ElizabethUiState, onConnect: () -> Unit) {
-    val statusColor = when (state.connectionState) {
-        ConnectionState.CONNECTED -> GoodGreen
-        ConnectionState.CONNECTING, ConnectionState.RECONNECTING -> ThrottleAmber
-        ConnectionState.DISCONNECTED -> MaterialTheme.colorScheme.onSurfaceVariant
+    val automation = state.driveAutomation
+    val statusColor = when (automation.phase) {
+        DriveAutomationPhase.CONNECTED, DriveAutomationPhase.RECORDING -> GoodGreen
+        DriveAutomationPhase.CONNECTING_TO_ADAPTER,
+        DriveAutomationPhase.CONNECTING_TO_ECU,
+        DriveAutomationPhase.RECONNECTING,
+        DriveAutomationPhase.HOLDING_TRIP,
+        DriveAutomationPhase.WAITING_FOR_IGNITION -> ThrottleAmber
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     Surface(
         color = MaterialTheme.colorScheme.surface,
@@ -287,18 +411,22 @@ private fun ConnectionHeader(state: ElizabethUiState, onConnect: () -> Unit) {
                     )
                     Spacer(Modifier.width(9.dp))
                     Text(
-                        when (state.connectionState) {
-                            ConnectionState.CONNECTED -> "Connected"
-                            ConnectionState.CONNECTING -> "Connecting"
-                            ConnectionState.RECONNECTING -> "Reconnecting"
-                            ConnectionState.DISCONNECTED -> "Disconnected"
-                        },
+                        automation.statusText,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 Text(
-                    "${state.adapterName}  ·  ${state.connectionDetail}",
+                    "${state.adapterName} · ${
+                        when {
+                            state.trip.isRecording -> "Trip recording"
+                            state.connectionState == ConnectionState.CONNECTED -> "ECU connected"
+                            automation.phase == DriveAutomationPhase.WAITING_FOR_IGNITION -> "ECU waiting"
+                            else -> "Trip idle"
+                        }
+                    }",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -319,6 +447,7 @@ private fun ConnectionHeader(state: ElizabethUiState, onConnect: () -> Unit) {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun LiveScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
+    val context = LocalContext.current
     val visible = remember(state.samples, state.timeWindow) {
         val seconds = state.timeWindow.seconds
         if (seconds == null) state.samples else {
@@ -352,7 +481,47 @@ private fun LiveScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
                     )
                 }
                 Button(onClick = viewModel::toggleTrip, modifier = Modifier.height(52.dp)) {
-                    Text(if (state.trip.isRecording) "Stop recording" else "Start recording")
+                    Text(if (state.trip.isRecording) "Stop trip" else "Start trip")
+                }
+            }
+        }
+        item {
+            ElevatedCard(shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Drive automation", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(
+                        state.driveAutomation.statusText,
+                        color = when (state.driveAutomation.phase) {
+                            DriveAutomationPhase.CONNECTED, DriveAutomationPhase.RECORDING -> GoodGreen
+                            DriveAutomationPhase.CONNECTION_UNAVAILABLE -> MaterialTheme.colorScheme.error
+                            else -> ThrottleAmber
+                        },
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    state.driveAutomation.graceEndsAtMillis?.let { ends ->
+                        val remaining = (ends - System.currentTimeMillis()).coerceAtLeast(0L) / 1_000L
+                        Text(
+                            "Holding trip open · ${remaining / 60}:${"%02d".format(remaining % 60)} remaining",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(
+                            onClick = {
+                                (context as? android.app.Activity)?.requestedOrientation =
+                                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                            },
+                            modifier = Modifier.weight(1f).height(50.dp),
+                        ) {
+                            Text("Open driving dashboard", maxLines = 1)
+                        }
+                        OutlinedButton(
+                            onClick = viewModel::changeAdapter,
+                            modifier = Modifier.weight(1f).height(50.dp),
+                        ) {
+                            Text("Change adapter", maxLines = 1)
+                        }
+                    }
                 }
             }
         }
@@ -959,6 +1128,9 @@ private fun HealthScreen(state: ElizabethUiState, viewModel: ElizabethViewModel)
         item {
             PidDiagnosticsCard(state)
         }
+        item {
+            DriveAutomationHealthCard(state, viewModel)
+        }
         items(healthItems.filter { it.status != HealthStatus.UNSUPPORTED }) {
             HealthRow(it)
         }
@@ -994,6 +1166,55 @@ private fun HealthScreen(state: ElizabethUiState, viewModel: ElizabethViewModel)
             SettingsCard(state, viewModel)
         }
         item { Spacer(Modifier.height(8.dp)) }
+    }
+}
+
+@Composable
+private fun DriveAutomationHealthCard(
+    state: ElizabethUiState,
+    viewModel: ElizabethViewModel,
+) {
+    val automation = state.driveAutomation
+    ElevatedCard(shape = RoundedCornerShape(22.dp)) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Drive Automation", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            DetailRow("Remembered adapter", viewModel.rememberedDevice()?.name ?: "None selected")
+            DetailRow("Companion association", if (automation.companionAssociated) "Associated" else "Not associated")
+            DetailRow("Background service", if (automation.backgroundServiceRunning) "Running" else "Stopped")
+            DetailRow("Active trip ID", automation.activeTripId?.toString() ?: "No active trip")
+            DetailRow(
+                "Last sample",
+                automation.lastSampleMillis?.let {
+                    DateFormat.getTimeInstance(DateFormat.MEDIUM).format(Date(it))
+                } ?: "No sample received",
+            )
+            DetailRow("Samples waiting to write", automation.pendingSamples.toString())
+            DetailRow(
+                "Last database flush",
+                automation.lastFlushMillis?.let {
+                    DateFormat.getTimeInstance(DateFormat.MEDIUM).format(Date(it))
+                } ?: "No flush yet",
+            )
+            DetailRow("Reconnect count", automation.reconnectCount.toString())
+            DetailRow(
+                "Grace period",
+                automation.graceEndsAtMillis?.let {
+                    "Holding trip open until ${
+                        DateFormat.getTimeInstance(DateFormat.MEDIUM).format(Date(it))
+                    }"
+                } ?: "Inactive",
+            )
+            DetailRow(
+                "Recovered trip",
+                if (automation.recoveredAfterProcessDeath) "Yes · active trip was restored" else "No",
+            )
+            OutlinedButton(
+                onClick = viewModel::changeAdapter,
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+            ) {
+                Text("Change adapter", fontWeight = FontWeight.Bold)
+            }
+        }
     }
 }
 
@@ -1293,11 +1514,55 @@ private fun SettingsCard(state: ElizabethUiState, viewModel: ElizabethViewModel)
                     FilterChip(selected = settings.recordingIntervalMillis == it, onClick = { viewModel.setRecordingInterval(it) }, label = { Text("$it ms") })
                 }
             }
-            DetailRow("Auto-start recording", if (settings.autoStartRecording) "On" else "Off")
-            OutlinedButton(onClick = viewModel::toggleAutoStart, modifier = Modifier.fillMaxWidth().height(48.dp)) {
-                Text(if (settings.autoStartRecording) "Turn auto-start off" else "Turn auto-start on")
+            HorizontalDivider()
+            Text("Drive automation", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            DetailRow("Automatic connection", if (settings.automaticConnection) "On" else "Off")
+            OutlinedButton(
+                onClick = viewModel::toggleAutomaticConnection,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+            ) {
+                Text(if (settings.automaticConnection) "Turn automatic connection off" else "Turn automatic connection on")
             }
-            DetailRow("Connection device", "vLinker MC+")
+            DetailRow("Automatic trips", if (settings.automaticTrips) "On" else "Off")
+            OutlinedButton(
+                onClick = viewModel::toggleAutomaticTrips,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+            ) {
+                Text(if (settings.automaticTrips) "Turn automatic trips off" else "Turn automatic trips on")
+            }
+            Text("Automatic trip end delay", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(1, 2, 3, 5).forEach { minutes ->
+                    FilterChip(
+                        selected = settings.automaticTripEndDelayMinutes == minutes,
+                        onClick = { viewModel.setAutomaticTripEndDelay(minutes) },
+                        label = { Text("$minutes min") },
+                    )
+                }
+            }
+            DetailRow(
+                "Show overlay during automatic trips",
+                if (settings.overlayDuringAutomaticTrips) "On" else "Off",
+            )
+            OutlinedButton(
+                onClick = viewModel::toggleOverlayDuringAutomaticTrips,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+            ) {
+                Text(
+                    if (settings.overlayDuringAutomaticTrips) {
+                        "Turn automatic overlay off"
+                    } else {
+                        "Turn automatic overlay on"
+                    }
+                )
+            }
+            DetailRow("Connection device", viewModel.rememberedDevice()?.name ?: "No adapter selected")
+            OutlinedButton(
+                onClick = viewModel::changeAdapter,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+            ) {
+                Text("Change adapter")
+            }
             DetailRow("Android Auto", "Four live gauges · RPM, boost, coolant, voltage")
             HorizontalDivider()
             FloatingOverlayControl(state, viewModel, showDescription = true)
@@ -1400,13 +1665,20 @@ private fun FloatingOverlayControl(
                 when {
                     !overlayPermissionGranted -> "Permission required"
                     state.settings.overlayEnabled -> "Visible over other apps"
+                    !state.trip.isRecording -> "Ready when a trip is recording"
                     else -> "Off"
                 },
             )
         }
         FilledTonalButton(
             onClick = {
-                if (state.settings.overlayEnabled) {
+                if (!state.trip.isRecording) {
+                    Toast.makeText(
+                        context,
+                        "Start a trip before showing the overlay.",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                } else if (state.settings.overlayEnabled) {
                     viewModel.setOverlayEnabled(false)
                     FloatingTripOverlayService.stop(context)
                 } else if (FloatingTripOverlay.canDraw(context)) {

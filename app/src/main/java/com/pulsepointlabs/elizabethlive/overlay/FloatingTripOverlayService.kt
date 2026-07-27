@@ -27,6 +27,7 @@ import kotlinx.coroutines.launch
 class FloatingTripOverlayService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var overlay: FloatingTripOverlay
+    private var automaticRequest = false
 
     override fun onCreate() {
         super.onCreate()
@@ -38,10 +39,30 @@ class FloatingTripOverlayService : Service() {
         }
         scope.launch {
             (application as ElizabethApplication).obdSession.state.collectLatest { state ->
-                if (state.settings.overlayEnabled && FloatingTripOverlay.canDraw(this@FloatingTripOverlayService)) {
+                val shouldShow = state.trip.isRecording &&
+                    (
+                        state.settings.overlayEnabled ||
+                            (
+                                automaticRequest &&
+                                    AutomaticOverlayPolicy.shouldShow(
+                                        tripRecording = state.trip.isRecording,
+                                        tripAutomatic = state.driveAutomation.activeTripAutomatic,
+                                        settingEnabled = state.settings.overlayDuringAutomaticTrips,
+                                        permissionGranted = FloatingTripOverlay.canDraw(this@FloatingTripOverlayService),
+                                    )
+                            )
+                        )
+                if (shouldShow && FloatingTripOverlay.canDraw(this@FloatingTripOverlayService)) {
                     overlay.update(state.toTripOverlayMetrics())
                 } else {
                     overlay.hide()
+                    if (!state.trip.isRecording) {
+                        automaticRequest = false
+                        if (state.settings.overlayEnabled) {
+                            (application as ElizabethApplication).obdSession.setOverlayEnabled(false)
+                        }
+                        stopSelf()
+                    }
                 }
             }
         }
@@ -51,6 +72,17 @@ class FloatingTripOverlayService : Service() {
         if (intent?.action == ACTION_STOP) {
             (application as ElizabethApplication).obdSession.setOverlayEnabled(false)
             stopSelf()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_AUTO_START) {
+            automaticRequest = true
+            return START_STICKY
+        }
+        if (intent?.action == ACTION_AUTO_STOP) {
+            automaticRequest = false
+            if (!(application as ElizabethApplication).obdSession.state.value.settings.overlayEnabled) {
+                stopSelf()
+            }
             return START_NOT_STICKY
         }
         if (!FloatingTripOverlay.canDraw(this)) {
@@ -119,6 +151,8 @@ class FloatingTripOverlayService : Service() {
 
     companion object {
         private const val ACTION_STOP = "com.pulsepointlabs.elizabethlive.overlay.STOP"
+        private const val ACTION_AUTO_START = "com.pulsepointlabs.elizabethlive.overlay.AUTO_START"
+        private const val ACTION_AUTO_STOP = "com.pulsepointlabs.elizabethlive.overlay.AUTO_STOP"
         private const val CHANNEL_ID = "elizabeth_trip_overlay"
         private const val NOTIFICATION_ID = 2107
 
@@ -133,6 +167,21 @@ class FloatingTripOverlayService : Service() {
                 Intent(context, FloatingTripOverlayService::class.java),
             )
             return true
+        }
+
+        fun startAutomatic(context: Context): Boolean {
+            if (!canStart(context)) return false
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, FloatingTripOverlayService::class.java).setAction(ACTION_AUTO_START),
+            )
+            return true
+        }
+
+        fun stopAutomatic(context: Context) {
+            context.startService(
+                Intent(context, FloatingTripOverlayService::class.java).setAction(ACTION_AUTO_STOP),
+            )
         }
 
         fun stop(context: Context) {

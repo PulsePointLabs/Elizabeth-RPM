@@ -9,6 +9,19 @@ enum class TimeWindow(val label: String, val seconds: Int?) {
 }
 enum class ThemeSetting { SYSTEM, LIGHT, DARK }
 enum class UnitSystem { US, METRIC }
+enum class FuelDataSource { ECU_REPORTED, MAF_ESTIMATED, UNAVAILABLE }
+enum class DriveAutomationPhase {
+    IDLE,
+    WAITING_FOR_ADAPTER,
+    CONNECTING_TO_ADAPTER,
+    WAITING_FOR_IGNITION,
+    CONNECTING_TO_ECU,
+    CONNECTED,
+    RECORDING,
+    RECONNECTING,
+    HOLDING_TRIP,
+    CONNECTION_UNAVAILABLE,
+}
 
 data class TelemetrySample(
     val timestampMillis: Long,
@@ -84,6 +97,10 @@ data class AppSettings(
     val defaultWindow: TimeWindow = TimeWindow.THIRTY_SECONDS,
     val recordingIntervalMillis: Long = 500,
     val autoStartRecording: Boolean = false,
+    val automaticConnection: Boolean = true,
+    val automaticTrips: Boolean = true,
+    val automaticTripEndDelayMinutes: Int = 3,
+    val overlayDuringAutomaticTrips: Boolean = false,
     val overlayEnabled: Boolean = false,
     val fuelPricePerGallon: Double = 4.00,
     val fuelPriceSource: String = "Example local price · edit before use",
@@ -97,6 +114,24 @@ data class PidDiagnostic(
     val status: String,
     val response: String,
     val value: Double? = null,
+)
+
+data class DriveAutomationStatus(
+    val phase: DriveAutomationPhase = DriveAutomationPhase.IDLE,
+    val statusText: String = "Ready",
+    val companionAssociated: Boolean = false,
+    val backgroundServiceRunning: Boolean = false,
+    val activeTripId: Long? = null,
+    val activeTripAutomatic: Boolean = false,
+    val lastSampleMillis: Long? = null,
+    val pendingSamples: Int = 0,
+    val lastFlushMillis: Long? = null,
+    val reconnectCount: Int = 0,
+    val graceStartedAtMillis: Long? = null,
+    val graceEndsAtMillis: Long? = null,
+    val recoveredAfterProcessDeath: Boolean = false,
+    val lastSavedTripId: Long? = null,
+    val lastSavedAtMillis: Long? = null,
 )
 
 data class ReadinessMonitor(
@@ -140,5 +175,6 @@ data class ElizabethUiState(
     val savedTrips: List<SavedTripSummary> = emptyList(),
     val selectedTrip: SavedTrip? = null,
     val tripHistoryLoading: Boolean = false,
+    val driveAutomation: DriveAutomationStatus = DriveAutomationStatus(),
     val settings: AppSettings = AppSettings(),
 )
