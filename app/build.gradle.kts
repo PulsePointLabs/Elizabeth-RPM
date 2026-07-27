@@ -13,8 +13,8 @@ android {
         applicationId = "com.pulsepointlabs.elizabethlive"
         minSdk = 31
         targetSdk = 36
-        versionCode = 17
-        versionName = "1.0.0-drive-automation"
+        versionCode = 18
+        versionName = "1.0.1-sensor-framing"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }

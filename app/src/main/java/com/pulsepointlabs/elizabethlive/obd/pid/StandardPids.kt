@@ -93,6 +93,10 @@ object StandardPids {
 
 object Elm327ResponseParser {
     private val statusLines = setOf("SEARCHING...", "SEARCHING", "STOPPED", "?")
+    private val formattedLength = Regex("^([0-9A-F]{3})(?:\\s+(.*))?$")
+    private val formattedSegment = Regex(
+        "([0-9A-F]):\\s*([0-9A-F\\s]+?)(?=\\s+[0-9A-F]:|$)"
+    )
 
     /**
      * Removes prompts, echo, whitespace, CAN header noise, and duplicates while retaining
@@ -100,32 +104,85 @@ object Elm327ResponseParser {
      */
     fun clean(raw: String, command: String? = null): List<String> {
         val echo = command?.replace(" ", "")?.uppercase()
-        return raw
+        val sourceLines = raw
             .replace(">", "\n")
             .split('\r', '\n')
             .map { it.trim().uppercase() }
             .filter { it.isNotBlank() && it !in statusLines }
             .filterNot { it.replace(" ", "") == echo }
             .filterNot { it == "NO DATA" || it == "UNABLE TO CONNECT" }
-            .mapNotNull { line ->
-                val tokens = line.split(Regex("\\s+"))
-                val withoutCanHeader = if (
-                    tokens.size > 1 &&
-                    (tokens.first().length == 3 || tokens.first().length == 8) &&
-                    tokens.first().all { it in '0'..'9' || it in 'A'..'F' }
+        val cleaned = mutableListOf<String>()
+        var lineIndex = 0
+        while (lineIndex < sourceLines.size) {
+            val line = sourceLines[lineIndex]
+            val lengthMatch = formattedLength.matchEntire(line)
+            val inlineSegments = lengthMatch?.groupValues?.getOrNull(2).orEmpty()
+            val nextIsSegment = sourceLines.getOrNull(lineIndex + 1)
+                ?.let(::isFormattedSegmentLine) == true
+            if (
+                lengthMatch != null &&
+                (inlineSegments.contains(':') || nextIsSegment)
+            ) {
+                val expectedByteCount = lengthMatch.groupValues[1].toInt(16)
+                val segments = mutableListOf<Pair<Int, List<Int>>>()
+                if (inlineSegments.isNotBlank()) {
+                    segments += parseFormattedSegments(inlineSegments)
+                }
+                var nextIndex = lineIndex + 1
+                while (nextIndex < sourceLines.size && isFormattedSegmentLine(sourceLines[nextIndex])) {
+                    segments += parseFormattedSegments(sourceLines[nextIndex])
+                    nextIndex++
+                }
+                val orderedSegments = segments.sortedBy { it.first }
+                val orderedBytes = orderedSegments.flatMap { it.second }
+                val hasContinuousSequence = orderedSegments.withIndex().all { (index, segment) ->
+                    segment.first == index % 16
+                }
+                if (
+                    hasContinuousSequence &&
+                    orderedBytes.size >= expectedByteCount
                 ) {
-                    tokens.drop(1)
-                } else {
-                    tokens
+                    cleaned += orderedBytes
+                        .take(expectedByteCount)
+                        .joinToString(" ") { "%02X".format(it) }
                 }
-                val compact = withoutCanHeader.joinToString("").replace(Regex("[^0-9A-F]"), "")
-                when {
-                    compact.length < 4 || compact.length % 2 != 0 -> null
-                    else -> compact.chunked(2).joinToString(" ")
-                }
+                lineIndex = nextIndex
+                continue
             }
-            .distinct()
+            normalizeStandardLine(line)?.let(cleaned::add)
+            lineIndex++
+        }
+        return cleaned.distinct()
     }
+
+    private fun normalizeStandardLine(line: String): String? {
+        val tokens = line.split(Regex("\\s+"))
+        val withoutCanHeader = if (
+            tokens.size > 1 &&
+            (tokens.first().length == 3 || tokens.first().length == 8) &&
+            tokens.first().all { it in '0'..'9' || it in 'A'..'F' }
+        ) {
+            tokens.drop(1)
+        } else {
+            tokens
+        }
+        val compact = withoutCanHeader.joinToString("").replace(Regex("[^0-9A-F]"), "")
+        return when {
+            compact.length < 4 || compact.length % 2 != 0 -> null
+            else -> compact.chunked(2).joinToString(" ")
+        }
+    }
+
+    private fun isFormattedSegmentLine(line: String): Boolean =
+        formattedSegment.find(line) != null
+
+    private fun parseFormattedSegments(line: String): List<Pair<Int, List<Int>>> =
+        formattedSegment.findAll(line).mapNotNull { match ->
+            val sequence = match.groupValues[1].toIntOrNull(16) ?: return@mapNotNull null
+            val compact = match.groupValues[2].filter { it in '0'..'9' || it in 'A'..'F' }
+            if (compact.isEmpty() || compact.length % 2 != 0) return@mapNotNull null
+            sequence to compact.chunked(2).mapNotNull { it.toIntOrNull(16) }
+        }.toList()
 
     fun payloadFor(raw: String, mode: Int, pid: Int, command: String? = null): List<Int>? {
         return payloadsFor(raw, mode, pid, command).firstOrNull()

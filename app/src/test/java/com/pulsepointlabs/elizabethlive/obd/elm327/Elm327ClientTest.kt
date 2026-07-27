@@ -212,6 +212,21 @@ class Elm327ClientTest {
     }
 
     @Test
+    fun `Accord formatted multi frame intake response decodes first reported sensor`() = runTest {
+        val intake = StandardPids.registry.first { it.pid == 0x68 }
+        val observation = Elm327Client(
+            ScriptedTransport(
+                mapOf(
+                    "0168" to "009\r0:416803494800\r1:00000055555555\r>"
+                )
+            )
+        ).readObserved(intake).getOrThrow()
+
+        assertEquals(PidReadStatus.VALUE, observation.status)
+        assertEquals(33.0, observation.value!!, 0.001)
+    }
+
+    @Test
     fun `vehicle diagnostics decode VIN DTCs readiness and freeze frame`() = runTest {
         val transport = ScriptedTransport(
             mapOf(

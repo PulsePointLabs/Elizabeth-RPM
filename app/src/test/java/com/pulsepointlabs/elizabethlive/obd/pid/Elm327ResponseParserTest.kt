@@ -49,4 +49,42 @@ class Elm327ResponseParserTest {
     fun `stopped and unable to connect do not produce frames`() {
         assertEquals(emptyList<String>(), Elm327ResponseParser.clean("STOPPED\rUNABLE TO CONNECT\r>"))
     }
+
+    @Test
+    fun `ELM formatted CAN frames are reassembled and padding is trimmed`() {
+        val raw = "0168\r009\r0:416803494800\r1:00000055555555\r>"
+
+        assertEquals(
+            listOf("41 68 03 49 48 00 00 00 00"),
+            Elm327ResponseParser.clean(raw, "0168"),
+        )
+        assertEquals(
+            listOf(0x03, 0x49, 0x48, 0x00, 0x00, 0x00, 0x00),
+            Elm327ResponseParser.payloadFor(raw, 1, 0x68, "0168"),
+        )
+    }
+
+    @Test
+    fun `collapsed ELM formatted CAN diagnostic response is accepted`() {
+        val raw = "009 0:416803494800 1:00000055555555"
+
+        assertEquals(
+            listOf(0x03, 0x49, 0x48, 0x00, 0x00, 0x00, 0x00),
+            Elm327ResponseParser.payloadFor(raw, 1, 0x68, "0168"),
+        )
+    }
+
+    @Test
+    fun `partial ELM formatted CAN response remains unavailable`() {
+        val raw = "009\r0:416803494800\r>"
+
+        assertNull(Elm327ResponseParser.payloadFor(raw, 1, 0x68, "0168"))
+    }
+
+    @Test
+    fun `ELM formatted CAN response with missing sequence remains unavailable`() {
+        val raw = "009\r0:416803494800\r2:00000055555555\r>"
+
+        assertNull(Elm327ResponseParser.payloadFor(raw, 1, 0x68, "0168"))
+    }
 }

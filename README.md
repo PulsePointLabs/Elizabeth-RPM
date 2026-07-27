@@ -4,10 +4,31 @@ Elizabeth Live is a private, strictly read-only Android OBD-II monitor for Eliza
 2021 Honda Accord EX-L 1.5T CVT. It is designed for a Samsung Galaxy S25 Ultra and a paired
 Vgate vLinker MC+ using Bluetooth Classic and ELM327.
 
-Current release: **v1.0.0-drive-automation**
+Current release: **v1.0.1-sensor-framing**
 
 There are no accounts, cloud services, analytics, ads, subscriptions, actuator commands,
 DTC clearing, coding functions, ECU writes, or invented Honda commands.
+
+## Sensor framing correction
+
+Version 1.0.1 reassembles ELM327 CAN-formatted multiline replies before standard PID decoding.
+Elizabeth's `0168` intake response uses the ELM length-and-sequence form:
+
+```text
+009
+0:416803494800
+1:00000055555555
+```
+
+The parser now validates sequence continuity, joins the segments, honors the hexadecimal payload
+length, and discards trailing CAN padding. This yields the complete standard PID `0168` payload
+and reports the first supported intake sensor correctly. In the captured response, byte `03`
+marks sensors 1 and 2 as supported and byte `49` reports 33 °C / 91 °F for sensor 1.
+
+The change also handles compact one-line diagnostic renderings and safely rejects incomplete or
+missing-sequence responses. Existing `0167` coolant and `0166` MAF decoding is unchanged. Direct
+engine fuel-rate PID `015E` remains unavailable when the ECU returns `NO DATA`; Elizabeth continues
+to label and use its MAF-based fuel estimate instead of presenting invented ECU data.
 
 ## Drive automation
 
