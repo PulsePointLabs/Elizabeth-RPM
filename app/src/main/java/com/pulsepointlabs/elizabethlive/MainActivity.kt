@@ -87,6 +87,8 @@ import com.pulsepointlabs.elizabethlive.ui.components.FuelTrimBalance
 import com.pulsepointlabs.elizabethlive.ui.components.RollingTelemetryChart
 import com.pulsepointlabs.elizabethlive.ui.components.VoltageSparkline
 import com.pulsepointlabs.elizabethlive.trip.FuelCostCalculator
+import com.pulsepointlabs.elizabethlive.overlay.FloatingTripOverlay
+import com.pulsepointlabs.elizabethlive.overlay.FloatingTripOverlayService
 import com.pulsepointlabs.elizabethlive.ui.theme.BoostTeal
 import com.pulsepointlabs.elizabethlive.ui.theme.ElizabethTheme
 import com.pulsepointlabs.elizabethlive.ui.theme.GoodGreen
@@ -137,6 +139,15 @@ private fun ElizabethApp(state: ElizabethUiState, viewModel: ElizabethViewModel)
     )
     var selected by rememberSaveable { mutableIntStateOf(0) }
     var dashboardDismissed by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(state.settings.overlayEnabled) {
+        if (
+            state.settings.overlayEnabled &&
+            FloatingTripOverlay.canDraw(context) &&
+            FloatingTripOverlayService.canStart(context)
+        ) {
+            FloatingTripOverlayService.start(context)
+        }
+    }
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     LaunchedEffect(isLandscape) {
         if (!isLandscape) dashboardDismissed = false
@@ -339,6 +350,9 @@ private fun LiveScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
                     Text(if (state.trip.isRecording) "Stop recording" else "Start recording")
                 }
             }
+        }
+        item {
+            FloatingOverlayControl(state, viewModel, showDescription = false)
         }
         item {
             SectionLabel("Channels")
@@ -1022,6 +1036,8 @@ private fun SettingsCard(state: ElizabethUiState, viewModel: ElizabethViewModel)
             }
             DetailRow("Connection device", "vLinker MC+")
             DetailRow("Android Auto", "Four live gauges · RPM, boost, coolant, voltage")
+            HorizontalDivider()
+            FloatingOverlayControl(state, viewModel, showDescription = true)
             OutlinedButton(
                 onClick = { exportLauncher.launch("Elizabeth-all-data-${System.currentTimeMillis()}.csv") },
                 enabled = state.samples.isNotEmpty(),
@@ -1073,6 +1089,89 @@ private fun exportTelemetryCsv(
         Toast.makeText(context, "CSV exported", Toast.LENGTH_SHORT).show()
     }.onFailure {
         Toast.makeText(context, "Export failed: ${it.message}", Toast.LENGTH_LONG).show()
+    }
+}
+
+@Composable
+private fun FloatingOverlayControl(
+    state: ElizabethUiState,
+    viewModel: ElizabethViewModel,
+    showDescription: Boolean,
+) {
+    val context = LocalContext.current
+    var overlayPermissionGranted by remember {
+        mutableStateOf(FloatingTripOverlay.canDraw(context))
+    }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        overlayPermissionGranted = FloatingTripOverlay.canDraw(context)
+        if (overlayPermissionGranted) {
+            if (FloatingTripOverlayService.canStart(context)) {
+                viewModel.setOverlayEnabled(true)
+                FloatingTripOverlayService.start(context)
+            } else {
+                Toast.makeText(
+                    context,
+                    "Connect to the vLinker once before enabling the overlay.",
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+        } else {
+            Toast.makeText(
+                context,
+                "Display-over-other-apps permission was not enabled.",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (showDescription) {
+            Text("Floating trip overlay", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                "A compact Sarah-style pill with average MPG, live MPG, and trip cost. Tap it to open Elizabeth, drag it anywhere, or use its visible × to close it.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            DetailRow(
+                "Overlay status",
+                when {
+                    !overlayPermissionGranted -> "Permission required"
+                    state.settings.overlayEnabled -> "Visible over other apps"
+                    else -> "Off"
+                },
+            )
+        }
+        FilledTonalButton(
+            onClick = {
+                if (state.settings.overlayEnabled) {
+                    viewModel.setOverlayEnabled(false)
+                    FloatingTripOverlayService.stop(context)
+                } else if (FloatingTripOverlay.canDraw(context)) {
+                    overlayPermissionGranted = true
+                    if (FloatingTripOverlayService.canStart(context)) {
+                        viewModel.setOverlayEnabled(true)
+                        FloatingTripOverlayService.start(context)
+                    } else {
+                        Toast.makeText(
+                            context,
+                            "Connect to the vLinker once before enabling the overlay.",
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                } else {
+                    permissionLauncher.launch(FloatingTripOverlay.permissionIntent(context))
+                }
+            },
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+        ) {
+            Text(
+                when {
+                    state.settings.overlayEnabled -> "Hide floating trip overlay"
+                    overlayPermissionGranted -> "Show floating trip overlay"
+                    else -> "Enable floating trip overlay"
+                }
+            )
+        }
     }
 }
 

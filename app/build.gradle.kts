@@ -13,8 +13,8 @@ android {
         applicationId = "com.pulsepointlabs.elizabethlive"
         minSdk = 31
         targetSdk = 36
-        versionCode = 14
-        versionName = "0.7.2-honda-multisensor"
+        versionCode = 15
+        versionName = "0.8.0-floating-trip-overlay"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }

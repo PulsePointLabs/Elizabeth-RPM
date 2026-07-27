@@ -6,6 +6,14 @@ Elizabeth Live is built with Kotlin, Jetpack Compose, Material 3, coroutines, St
 Room-ready storage seams, and Compose Canvas charts. No account, cloud service, advertising,
 analytics, or vehicle write commands are present.
 
+Version 0.8.0 adds a compact Sarah Vital Signs-style floating trip overlay. A visible control on
+the Live screen handles Android's one-time display-over-other-apps permission and then shows or
+hides the pill without hidden gestures. The overlay displays average MPG as the large primary
+value, with live MPG and trip cost beside it. It can be dragged, tapped to reopen Elizabeth, or
+closed with its visible `×`. A low-priority connected-device foreground service keeps both the
+Bluetooth-backed session and overlay alive while another app such as navigation is onscreen.
+Unavailable economy remains `—`, never a fake zero.
+
 Version 0.7.2 corrects the live-data definitions for Elizabeth's newer Honda PCM. The vehicle
 does not answer the older single-sensor PIDs `0105`, `010F`, and `0110`; it uses the SAE J1979
 multi-sensor forms `0167` (coolant), `0168` (intake air), and `0166` (mass air flow). These

@@ -68,6 +68,7 @@ data class AppSettings(
     val defaultWindow: TimeWindow = TimeWindow.THIRTY_SECONDS,
     val recordingIntervalMillis: Long = 500,
     val autoStartRecording: Boolean = false,
+    val overlayEnabled: Boolean = false,
     val fuelPricePerGallon: Double = 4.00,
     val fuelPriceSource: String = "Example local price · edit before use",
 )

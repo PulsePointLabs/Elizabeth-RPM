@@ -51,6 +51,10 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                         "auto_start_recording",
                         initial.settings.autoStartRecording,
                     ),
+                    overlayEnabled = preferences.getBoolean(
+                        "floating_trip_overlay",
+                        initial.settings.overlayEnabled,
+                    ),
                     fuelPricePerGallon = savedFuelPrice,
                     fuelPriceSource = if (hasSavedFuelPrice) {
                         "Saved local regular-gas price"
@@ -566,6 +570,11 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
         val autoStart = !it.settings.autoStartRecording
         preferences.edit().putBoolean("auto_start_recording", autoStart).apply()
         it.copy(settings = it.settings.copy(autoStartRecording = autoStart))
+    }
+
+    fun setOverlayEnabled(enabled: Boolean) {
+        preferences.edit().putBoolean("floating_trip_overlay", enabled).apply()
+        mutableState.update { it.copy(settings = it.settings.copy(overlayEnabled = enabled)) }
     }
 
     private fun detectEvent(sample: TelemetrySample): TripEvent? = when {

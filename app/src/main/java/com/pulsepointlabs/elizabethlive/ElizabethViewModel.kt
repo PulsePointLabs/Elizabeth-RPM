@@ -26,5 +26,6 @@ class ElizabethViewModel(application: Application) : AndroidViewModel(applicatio
     fun setRecordingInterval(intervalMillis: Long) = session.setRecordingInterval(intervalMillis)
     fun setFuelPricePerGallon(price: Double) = session.setFuelPricePerGallon(price)
     fun toggleAutoStart() = session.toggleAutoStart()
+    fun setOverlayEnabled(enabled: Boolean) = session.setOverlayEnabled(enabled)
     fun refreshDiagnostics() = session.refreshDiagnostics()
 }
