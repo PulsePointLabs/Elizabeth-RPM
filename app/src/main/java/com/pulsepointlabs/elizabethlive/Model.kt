@@ -54,6 +54,22 @@ data class TripSummary(
     val events: List<TripEvent> = emptyList(),
 )
 
+data class SavedTripSummary(
+    val id: Long,
+    val startedAtMillis: Long,
+    val endedAtMillis: Long,
+    val summary: TripSummary,
+)
+
+data class SavedTrip(
+    val id: Long,
+    val startedAtMillis: Long,
+    val endedAtMillis: Long,
+    val summary: TripSummary,
+    val samples: List<TelemetrySample>,
+    val events: List<TripEvent>,
+)
+
 data class HealthItem(
     val title: String,
     val summary: String,
@@ -121,5 +137,8 @@ data class ElizabethUiState(
     val protocolName: String? = null,
     val lastConnectionError: String? = null,
     val trip: TripSummary = TripSummary(),
+    val savedTrips: List<SavedTripSummary> = emptyList(),
+    val selectedTrip: SavedTrip? = null,
+    val tripHistoryLoading: Boolean = false,
     val settings: AppSettings = AppSettings(),
 )

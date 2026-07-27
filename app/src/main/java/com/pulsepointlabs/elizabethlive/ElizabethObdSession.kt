@@ -10,7 +10,10 @@ import com.pulsepointlabs.elizabethlive.obd.elm327.Elm327Client
 import com.pulsepointlabs.elizabethlive.obd.pid.PollPriority
 import com.pulsepointlabs.elizabethlive.obd.pid.StandardPids
 import com.pulsepointlabs.elizabethlive.obd.transport.BluetoothClassicObdTransport
+import com.pulsepointlabs.elizabethlive.data.ElizabethDatabase
+import com.pulsepointlabs.elizabethlive.data.TripRepository
 import com.pulsepointlabs.elizabethlive.trip.FuelEfficiencyCalculator
+import com.pulsepointlabs.elizabethlive.trip.TripSummaryCalculator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -69,6 +72,10 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
 
     private val transport = BluetoothClassicObdTransport(application)
     private val elm = Elm327Client(transport)
+    private val tripRepository = TripRepository(ElizabethDatabase.get(application))
+    private val recordedTripSamples = mutableListOf<TelemetrySample>()
+    private val recordedTripEvents = mutableListOf<TripEvent>()
+    private val lastTripEventMillis = mutableMapOf<String, Long>()
     private var selectedDevice: PairedObdDevice? =
         preferences.getString("obd_device_address", null)?.let { address ->
             PairedObdDevice(
@@ -80,6 +87,14 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
     private var pollingJob: Job? = null
     private var diagnosticsJob: Job? = null
     private var reconnectAttempts = 0
+
+    init {
+        scope.launch {
+            tripRepository.trips.collect { trips ->
+                mutableState.update { it.copy(savedTrips = trips) }
+            }
+        }
+    }
 
     @SuppressLint("MissingPermission")
     fun prepareConnection() {
@@ -240,6 +255,9 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                     liveDistanceKm = if (reconnecting) it.liveDistanceKm else 0.0,
                     samples = if (autoStart) emptyList() else it.samples,
                     trip = if (autoStart) {
+                        recordedTripSamples.clear()
+                        recordedTripEvents.clear()
+                        lastTripEventMillis.clear()
                         TripSummary(
                             isRecording = true,
                             startedAtMillis = System.currentTimeMillis(),
@@ -263,11 +281,9 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
              * registry at its assigned rate and promote every successful reply into supportedPids.
              * This avoids both blank real sensors and the "poll everything" behavior we do not want.
              */
-            // Elizabeth's newer Honda PCM exposes the SAE multi-sensor forms (66/67/68).
-            // The older single-sensor forms (10/05/0F) were verified to return NO DATA.
-            val registry = StandardPids.registry.filterNot {
-                it.pid in setOf(0x05, 0x0F, 0x10)
-            }
+            // Poll both classic and newer multi-sensor forms. A support bitmap can merge ECU
+            // replies or omit a directly readable PID, so the first successful form wins.
+            val registry = StandardPids.registry
             val fast = registry.filter { it.priority == PollPriority.FAST }
             val medium = registry.filter { it.priority == PollPriority.MEDIUM }
             val slow = registry.filter { it.priority == PollPriority.SLOW }
@@ -452,17 +468,29 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
     }
 
     private fun addSample(sample: TelemetrySample, elapsedHours: Double) {
-        if (state.value.graphPaused) return
-        val event = detectEvent(sample)
+        val rawEvent = detectEvent(sample)
+        val event = rawEvent?.takeIf {
+            lastTripEventMillis[it.label]
+                ?.let { previous -> sample.timestampMillis - previous >= 30_000L }
+                ?: true
+        }
+        event?.let { lastTripEventMillis[it.label] = sample.timestampMillis }
+        if (state.value.trip.isRecording) {
+            recordedTripSamples += sample
+            event?.let {
+                recordedTripEvents += it
+                if (recordedTripEvents.size > 500) recordedTripEvents.removeAt(0)
+            }
+        }
         mutableState.update {
             it.copy(
-                samples = (it.samples + sample).takeLast(2_400),
+                samples = if (it.graphPaused) it.samples else (it.samples + sample).takeLast(2_400),
                 liveFuelUsedLiters = it.liveFuelUsedLiters +
                     ((sample.fuelRateLitersPerHour ?: 0.0) * elapsedHours),
                 liveDistanceKm = it.liveDistanceKm +
                     ((sample.speedKph ?: 0.0) * elapsedHours),
                 trip = if (it.trip.isRecording && event != null) {
-                    it.trip.copy(events = (it.trip.events + event).takeLast(20))
+                    it.trip.copy(events = recordedTripEvents.takeLast(50))
                 } else it.trip,
             )
         }
@@ -512,17 +540,54 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
         val changed = it.selectedChannels.toMutableSet().apply { if (!add(channel)) remove(channel) }
         it.copy(selectedChannels = changed)
     }
-    override fun toggleTrip() = mutableState.update {
-        val recording = !it.trip.isRecording
-        it.copy(
-            liveDriveStartedAtMillis = if (recording) System.currentTimeMillis() else it.liveDriveStartedAtMillis,
-            liveFuelUsedLiters = if (recording) 0.0 else it.liveFuelUsedLiters,
-            liveDistanceKm = if (recording) 0.0 else it.liveDistanceKm,
-            samples = if (recording) emptyList() else it.samples,
-            trip = if (recording) {
-                TripSummary(isRecording = true, startedAtMillis = System.currentTimeMillis())
-            } else it.trip.copy(isRecording = false),
+    override fun toggleTrip() {
+        val current = state.value
+        if (!current.trip.isRecording) {
+            val startedAt = System.currentTimeMillis()
+            recordedTripSamples.clear()
+            recordedTripEvents.clear()
+            lastTripEventMillis.clear()
+            mutableState.update {
+                it.copy(
+                    liveDriveStartedAtMillis = startedAt,
+                    liveFuelUsedLiters = 0.0,
+                    liveDistanceKm = 0.0,
+                    samples = emptyList(),
+                    selectedTrip = null,
+                    trip = TripSummary(isRecording = true, startedAtMillis = startedAt),
+                )
+            }
+            return
+        }
+
+        val endedAt = System.currentTimeMillis()
+        val completed = TripSummaryCalculator.summarize(
+            startedAtMillis = current.trip.startedAtMillis,
+            samples = recordedTripSamples.toList(),
+            events = recordedTripEvents.toList(),
+            fuelUsedLiters = current.liveFuelUsedLiters,
+            isRecording = false,
+            endedAtMillis = endedAt,
         )
+        mutableState.update { it.copy(trip = completed, tripHistoryLoading = true) }
+        scope.launch {
+            runCatching {
+                tripRepository.save(
+                    summary = completed,
+                    endedAtMillis = endedAt,
+                    samples = recordedTripSamples.toList(),
+                )
+            }.onSuccess { tripId ->
+                selectTrip(tripId)
+            }.onFailure { error ->
+                mutableState.update {
+                    it.copy(
+                        tripHistoryLoading = false,
+                        lastConnectionError = "Trip could not be saved: ${error.message ?: "database error"}",
+                    )
+                }
+            }
+        }
     }
     fun deleteTrip() = mutableState.update {
         it.copy(
@@ -532,6 +597,29 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
             liveDistanceKm = 0.0,
             liveDriveStartedAtMillis = System.currentTimeMillis(),
         )
+    }
+
+    fun selectTrip(tripId: Long) {
+        mutableState.update { it.copy(tripHistoryLoading = true) }
+        scope.launch {
+            val trip = tripRepository.load(tripId)
+            mutableState.update {
+                it.copy(selectedTrip = trip, tripHistoryLoading = false)
+            }
+        }
+    }
+
+    fun closeTripDetail() = mutableState.update { it.copy(selectedTrip = null) }
+
+    fun deleteSavedTrip(tripId: Long) {
+        scope.launch {
+            tripRepository.delete(tripId)
+            mutableState.update {
+                it.copy(
+                    selectedTrip = if (it.selectedTrip?.id == tripId) null else it.selectedTrip,
+                )
+            }
+        }
     }
     fun setTheme(theme: ThemeSetting) {
         preferences.edit().putString("theme", theme.name).apply()
@@ -584,8 +672,24 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
             TripEvent(sample.timestampMillis, "High RPM", "${sample.rpm.toInt()} rpm")
         sample.boostPsi?.let { it > 14.8 } == true ->
             TripEvent(sample.timestampMillis, "Peak boost", "${"%.1f".format(sample.boostPsi)} psi")
+        sample.throttlePercent?.let { it > 75 } == true &&
+            sample.engineLoad?.let { it > 60 } == true ->
+            TripEvent(
+                sample.timestampMillis,
+                "Hard acceleration",
+                "${sample.throttlePercent.toInt()}% throttle",
+            )
+        sample.coolantC?.let { it > 108 } == true ->
+            TripEvent(sample.timestampMillis, "High coolant temperature", "${sample.coolantC.toInt()} °C")
         sample.intakeC?.let { it > 55 } == true ->
             TripEvent(sample.timestampMillis, "High intake temperature", "${sample.intakeC.toInt()} °C")
+        listOfNotNull(sample.shortFuelTrim, sample.longFuelTrim).any { kotlin.math.abs(it) > 20 } ->
+            TripEvent(
+                sample.timestampMillis,
+                "Large fuel trim",
+                listOfNotNull(sample.shortFuelTrim, sample.longFuelTrim)
+                    .joinToString(" / ") { "%+.1f%%".format(it) },
+            )
         else -> null
     }
 

@@ -12,6 +12,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -497,10 +498,11 @@ private fun SupportingPanel(
                 modifier = Modifier.weight(1f).fillMaxHeight(),
             )
             VisualMetricTile(
-                label = if (sample?.fuelRateEstimated == true) "FUEL RATE · EST" else "FUEL RATE",
+                label = "FUEL RATE",
                 value = sample?.fuelRateLitersPerHour?.let { "${it.oneDecimal()} L/h" } ?: "—",
                 progress = fuelLoad,
                 severity = fuelLoad,
+                caption = if (sample?.fuelRateEstimated == true) "EST" else null,
                 modifier = Modifier.weight(1f).fillMaxHeight(),
             )
         }
@@ -589,6 +591,7 @@ private fun VisualMetricTile(
     value: String,
     progress: Float,
     severity: Float,
+    caption: String? = null,
     modifier: Modifier = Modifier,
 ) {
     val color = animatedStatusColor(severity)
@@ -597,15 +600,29 @@ private fun VisualMetricTile(
             Modifier.fillMaxSize().padding(horizontal = 9.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text(
-                label,
-                fontSize = 13.sp,
-                lineHeight = 13.sp,
-                fontWeight = FontWeight.Black,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    label,
+                    modifier = Modifier.weight(1f),
+                    fontSize = 13.sp,
+                    lineHeight = 13.sp,
+                    fontWeight = FontWeight.Black,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Clip,
+                )
+                caption?.let {
+                    Text(
+                        it,
+                        modifier = Modifier
+                            .background(color.copy(alpha = .14f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 5.dp, vertical = 2.dp),
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Black,
+                        color = color,
+                    )
+                }
+            }
             Text(
                 value,
                 fontSize = 23.sp,
@@ -685,18 +702,40 @@ private fun TachometerGauge(
     val track = MaterialTheme.colorScheme.surfaceVariant
     val tickColor = MaterialTheme.colorScheme.onSurfaceVariant
     val dialCenterColor = MaterialTheme.colorScheme.surface
-    Box(modifier, contentAlignment = Alignment.Center) {
-        Canvas(Modifier.fillMaxSize().padding(3.dp)) {
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            "ENGINE RPM",
+            fontSize = 10.sp,
+            lineHeight = 10.sp,
+            fontWeight = FontWeight.Black,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+        )
+        Canvas(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 5.dp)) {
             val sweep = 270f
             val start = 135f
-            val diameter = min(size.width, size.height) * .88f
-            val center = Offset(size.width / 2f, size.height * .53f)
+            val diameter = min(size.width, size.height) * .94f
+            val center = Offset(size.width / 2f, size.height * .52f)
             val topLeft = Offset(center.x - diameter / 2f, center.y - diameter / 2f)
-            val stroke = 7.dp.toPx()
+            val stroke = 6.dp.toPx()
+            drawCircle(
+                color = track.copy(alpha = .18f),
+                radius = diameter * .43f,
+                center = center,
+            )
             drawArc(
                 color = track,
                 startAngle = start,
                 sweepAngle = sweep,
+                useCenter = false,
+                topLeft = topLeft,
+                size = Size(diameter, diameter),
+                style = Stroke(stroke, cap = StrokeCap.Round),
+            )
+            drawArc(
+                color = WarningRed.copy(alpha = .72f),
+                startAngle = start + sweep * .80f,
+                sweepAngle = sweep * .20f,
                 useCenter = false,
                 topLeft = topLeft,
                 size = Size(diameter, diameter),
@@ -755,10 +794,15 @@ private fun TachometerGauge(
                 )
             }
             val needleAngle = (start + sweep * progress) * PI / 180.0
-            val needleLength = outerRadius * .67f
+            val needleLength = outerRadius * .72f
+            val needleTail = outerRadius * .12f
+            val tail = Offset(
+                center.x - cos(needleAngle).toFloat() * needleTail,
+                center.y - sin(needleAngle).toFloat() * needleTail,
+            )
             drawLine(
                 color = color,
-                start = center,
+                start = tail,
                 end = Offset(
                     center.x + cos(needleAngle).toFloat() * needleLength,
                     center.y + sin(needleAngle).toFloat() * needleLength,
@@ -769,32 +813,31 @@ private fun TachometerGauge(
             drawCircle(color = dialCenterColor, radius = 7.dp.toPx(), center = center)
             drawCircle(color = color, radius = 4.dp.toPx(), center = center)
         }
-        Column(
-            modifier = Modifier.padding(top = 6.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+        Row(
+            modifier = Modifier.fillMaxWidth().height(35.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                rpm?.toInt()?.toString() ?: "—",
-                fontSize = 36.sp,
-                lineHeight = 37.sp,
-                fontWeight = FontWeight.Black,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                softWrap = false,
-            )
-            Text(
-                "ENGINE RPM",
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Black,
-                color = color,
-                maxLines = 1,
-            )
-            Row(
-                modifier = Modifier.padding(top = 3.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
+            Column(Modifier.weight(1f)) {
                 GaugeStatistic("AVG", averageRpm, RpmBlue)
                 GaugeStatistic("MAX", maximumRpm, ThrottleAmber)
+            }
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    rpm?.toInt()?.let { "%,d".format(it) } ?: "—",
+                    fontSize = 27.sp,
+                    lineHeight = 28.sp,
+                    fontWeight = FontWeight.Black,
+                    color = color,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+                Text(
+                    " rpm",
+                    modifier = Modifier.padding(bottom = 3.dp),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Black,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -804,7 +847,8 @@ private fun TachometerGauge(
 private fun GaugeStatistic(label: String, rpm: Double?, color: Color) {
     Text(
         "$label ${rpm?.toInt()?.let { "%,d".format(it) } ?: "—"}",
-        fontSize = 9.sp,
+        fontSize = 8.sp,
+        lineHeight = 10.sp,
         fontWeight = FontWeight.Black,
         color = color,
         maxLines = 1,
@@ -856,7 +900,21 @@ private fun DashboardCard(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
-        Box(Modifier.fillMaxSize()) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .border(1.dp, accentColor.copy(alpha = .14f), RoundedCornerShape(18.dp))
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            accentColor.copy(alpha = .045f),
+                            Color.Transparent,
+                            Color.Transparent,
+                        )
+                    ),
+                    RoundedCornerShape(18.dp),
+                )
+        ) {
             Box(
                 Modifier
                     .fillMaxWidth()

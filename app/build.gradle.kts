@@ -13,8 +13,8 @@ android {
         applicationId = "com.pulsepointlabs.elizabethlive"
         minSdk = 31
         targetSdk = 36
-        versionCode = 15
-        versionName = "0.8.0-floating-trip-overlay"
+        versionCode = 16
+        versionName = "0.9.0-trip-history-dashboard"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }

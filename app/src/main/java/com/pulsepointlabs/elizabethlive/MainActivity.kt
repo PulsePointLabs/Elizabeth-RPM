@@ -13,6 +13,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,7 +36,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.DirectionsCar
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.QueryStats
 import androidx.compose.material3.AlertDialog
@@ -96,6 +99,8 @@ import com.pulsepointlabs.elizabethlive.ui.theme.RpmBlue
 import com.pulsepointlabs.elizabethlive.ui.theme.ThrottleAmber
 import com.pulsepointlabs.elizabethlive.ui.theme.WarningRed
 import java.util.Locale
+import java.text.DateFormat
+import java.util.Date
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -520,6 +525,16 @@ private fun MetricText(label: String, value: String, modifier: Modifier = Modifi
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun TripScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
+    state.selectedTrip?.let { selectedTrip ->
+        SavedTripDetailScreen(
+            trip = selectedTrip,
+            units = state.settings.units,
+            smoothing = state.settings.smoothing,
+            onBack = viewModel::closeTripDetail,
+            onDelete = { viewModel.deleteSavedTrip(selectedTrip.id) },
+        )
+        return
+    }
     val trip = liveTripSummary(state)
     var inspectedTripSample by remember { mutableStateOf<TelemetrySample?>(null) }
     val context = LocalContext.current
@@ -543,7 +558,7 @@ private fun TripScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
     ) {
         item {
             Text("Trip", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            Text("Recorded drive summary", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Current drive and saved history", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -575,11 +590,51 @@ private fun TripScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
             } else {
                 Card {
                     Text(
-                        if (trip.startedAtMillis == null) "Start a trip to build a live summary." else "Live trip stopped · summary remains on this device session.",
+                        if (trip.startedAtMillis == null) {
+                            "Start a trip to build a live summary."
+                        } else {
+                            "Trip stopped and saved locally."
+                        },
                         Modifier.padding(16.dp),
                     )
                 }
             }
+        }
+        item {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Previous trips", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(
+                        "${state.savedTrips.size} saved locally",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (state.tripHistoryLoading) {
+                    Text("Loading…", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+        if (state.savedTrips.isEmpty()) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .45f)
+                    )
+                ) {
+                    Text(
+                        "Completed trips will appear here. Tap one to open its timeline, ranges, events, and export controls.",
+                        Modifier.padding(16.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        items(state.savedTrips, key = { it.id }) { saved ->
+            SavedTripRow(saved, state.settings.units) { viewModel.selectTrip(saved.id) }
+        }
+        item {
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            Text("Current trip", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         }
         item {
             FuelCostSummaryCard(state, viewModel)
@@ -631,7 +686,7 @@ private fun TripScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
             }
         }
         items(visibleEvents, key = { "${it.timestampMillis}-${it.label}" }) { event ->
-            EventRow(event)
+            EventRow(event, trip.startedAtMillis)
         }
         item { Spacer(Modifier.height(8.dp)) }
     }
@@ -771,7 +826,7 @@ private fun RangeLine(label: String, value: String, start: Float, end: Float, co
 }
 
 @Composable
-private fun EventRow(event: TripEvent) {
+private fun EventRow(event: TripEvent, startedAtMillis: Long? = null) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(12.dp).clip(CircleShape).background(ThrottleAmber))
@@ -780,7 +835,13 @@ private fun EventRow(event: TripEvent) {
                 Text(event.label, fontWeight = FontWeight.SemiBold)
                 Text(event.detail, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Text("+${event.timestampMillis / 1_000}s", style = MaterialTheme.typography.labelMedium)
+            val offsetSeconds = startedAtMillis?.let {
+                ((event.timestampMillis - it).coerceAtLeast(0L) / 1_000L)
+            }
+            Text(
+                offsetSeconds?.let { "+${formatTripDuration(it)}" } ?: "",
+                style = MaterialTheme.typography.labelMedium,
+            )
         }
     }
 }
@@ -931,6 +992,208 @@ private fun HealthScreen(state: ElizabethUiState, viewModel: ElizabethViewModel)
         }
         item {
             SettingsCard(state, viewModel)
+        }
+        item { Spacer(Modifier.height(8.dp)) }
+    }
+}
+
+@Composable
+private fun SavedTripRow(
+    trip: SavedTripSummary,
+    units: UnitSystem,
+    onClick: () -> Unit,
+) {
+    val summary = trip.summary
+    val economy = if (summary.fuelUsedLiters > 0.0 && summary.distanceKm > 0.0) {
+        (summary.distanceKm * .621371) / (summary.fuelUsedLiters * .264172)
+    } else null
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        shape = RoundedCornerShape(20.dp),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+                            .format(Date(trip.startedAtMillis)),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "${formatTripDuration(summary.durationSeconds)} · ${
+                            if (units == UnitSystem.US) {
+                                "${(summary.distanceKm * .621371).oneDecimal()} mi"
+                            } else {
+                                "${summary.distanceKm.oneDecimal()} km"
+                            }
+                        }",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Surface(
+                    color = GoodGreen.copy(alpha = .13f),
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Text(
+                        economy?.let { "${it.oneDecimal()} MPG" } ?: "Saved",
+                        Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        color = GoodGreen,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CompactTripStat("AVG RPM", summary.averageRpm.toInt().toString(), Modifier.weight(1f))
+                CompactTripStat("MAX RPM", summary.maximumRpm.toInt().toString(), Modifier.weight(1f))
+                CompactTripStat(
+                    "PEAK BOOST",
+                    if (units == UnitSystem.US) "${summary.maximumBoostPsi.oneDecimal()} psi"
+                    else "${(summary.maximumBoostPsi * 6.89476).oneDecimal()} kPa",
+                    Modifier.weight(1f),
+                )
+            }
+            Text(
+                "Tap for full trip details",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+    }
+}
+
+@Composable
+private fun CompactTripStat(label: String, value: String, modifier: Modifier = Modifier) {
+    Surface(modifier, color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .6f), shape = RoundedCornerShape(12.dp)) {
+        Column(Modifier.padding(horizontal = 9.dp, vertical = 8.dp)) {
+            Text(label, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(value, fontSize = 17.sp, fontWeight = FontWeight.Black, maxLines = 1)
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SavedTripDetailScreen(
+    trip: SavedTrip,
+    units: UnitSystem,
+    smoothing: Boolean,
+    onBack: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val context = LocalContext.current
+    var inspectedSample by remember { mutableStateOf<TelemetrySample?>(null) }
+    var confirmDelete by remember { mutableStateOf(false) }
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv")
+    ) { uri ->
+        uri?.let { exportTelemetryCsv(context, it, trip.samples) }
+    }
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Delete this trip?") },
+            text = { Text("This removes the saved summary, timeline, and events from this phone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDelete = false
+                    onDelete()
+                }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
+            },
+        )
+    }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(18.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                FilledTonalButton(onClick = onBack, modifier = Modifier.height(48.dp)) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, null)
+                    Spacer(Modifier.width(7.dp))
+                    Text("All trips")
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Trip details", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Text(
+                        DateFormat.getDateTimeInstance(DateFormat.FULL, DateFormat.SHORT)
+                            .format(Date(trip.startedAtMillis)),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(
+                    onClick = { exportLauncher.launch("Elizabeth-trip-${trip.startedAtMillis}.csv") },
+                    enabled = trip.samples.isNotEmpty(),
+                    modifier = Modifier.weight(1f).height(52.dp),
+                ) { Text("Export CSV") }
+                OutlinedButton(
+                    onClick = { confirmDelete = true },
+                    modifier = Modifier.weight(1f).height(52.dp),
+                ) {
+                    Icon(Icons.Rounded.Delete, null, tint = MaterialTheme.colorScheme.error)
+                    Spacer(Modifier.width(7.dp))
+                    Text("Delete trip", color = MaterialTheme.colorScheme.error)
+                }
+            }
+        }
+        item {
+            ElevatedCard(shape = RoundedCornerShape(22.dp)) {
+                Column(Modifier.padding(18.dp)) {
+                    Text("Full-trip timeline", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(
+                        "${trip.samples.size} locally recorded samples",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    RollingTelemetryChart(
+                        samples = trip.samples,
+                        channels = setOf("RPM", "Boost", "Throttle"),
+                        inspected = inspectedSample,
+                        modifier = Modifier.height(230.dp),
+                        smoothing = smoothing,
+                        onTap = { inspectedSample = null },
+                        onInspect = { inspectedSample = it },
+                    )
+                }
+            }
+        }
+        item {
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                maxItemsInEachRow = 2,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                val summary = trip.summary
+                SummaryTile("Duration", formatTripDuration(summary.durationSeconds))
+                SummaryTile("Distance", if (units == UnitSystem.US) "${(summary.distanceKm * .621371).oneDecimal()} mi" else "${summary.distanceKm.oneDecimal()} km")
+                SummaryTile("Average speed", speedText(summary.averageSpeedKph, units))
+                SummaryTile("Maximum speed", speedText(summary.maximumSpeedKph, units))
+                SummaryTile("Average RPM", summary.averageRpm.toInt().toString())
+                SummaryTile("Maximum RPM", summary.maximumRpm.toInt().toString())
+                SummaryTile("Peak boost", if (units == UnitSystem.US) "${summary.maximumBoostPsi.oneDecimal()} psi" else "${(summary.maximumBoostPsi * 6.89476).oneDecimal()} kPa")
+                SummaryTile("Average throttle", "${summary.averageThrottle.toInt()}%")
+            }
+        }
+        item { RangeSummaryCard(trip.summary, units) }
+        item {
+            Text("Notable events", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        }
+        if (trip.events.isEmpty()) {
+            item { Text("No notable events recorded.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        }
+        items(trip.events, key = { "${it.timestampMillis}-${it.label}" }) { event ->
+            EventRow(event, trip.startedAtMillis)
         }
         item { Spacer(Modifier.height(8.dp)) }
     }
@@ -1244,6 +1507,12 @@ private fun Double.temperature(units: UnitSystem): String =
     if (units == UnitSystem.US) "${(this * 9 / 5 + 32).toInt()} °F" else "${toInt()} °C"
 private fun speedText(kph: Double, units: UnitSystem): String =
     if (units == UnitSystem.US) "${(kph * .621371).toInt()} mph" else "${kph.toInt()} km/h"
+private fun formatTripDuration(seconds: Long): String =
+    if (seconds >= 3_600) {
+        String.format(Locale.US, "%d:%02d:%02d", seconds / 3_600, (seconds / 60) % 60, seconds % 60)
+    } else {
+        String.format(Locale.US, "%d:%02d", seconds / 60, seconds % 60)
+    }
 
 private fun liveTripSummary(state: ElizabethUiState): TripSummary {
     val startedAt = state.trip.startedAtMillis ?: return TripSummary(
