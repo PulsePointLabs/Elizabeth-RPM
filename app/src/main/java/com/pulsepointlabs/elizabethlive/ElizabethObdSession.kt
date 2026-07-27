@@ -259,9 +259,14 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
              * registry at its assigned rate and promote every successful reply into supportedPids.
              * This avoids both blank real sensors and the "poll everything" behavior we do not want.
              */
-            val fast = StandardPids.registry.filter { it.priority == PollPriority.FAST }
-            val medium = StandardPids.registry.filter { it.priority == PollPriority.MEDIUM }
-            val slow = StandardPids.registry.filter { it.priority == PollPriority.SLOW }
+            // Elizabeth's newer Honda PCM exposes the SAE multi-sensor forms (66/67/68).
+            // The older single-sensor forms (10/05/0F) were verified to return NO DATA.
+            val registry = StandardPids.registry.filterNot {
+                it.pid in setOf(0x05, 0x0F, 0x10)
+            }
+            val fast = registry.filter { it.priority == PollPriority.FAST }
+            val medium = registry.filter { it.priority == PollPriority.MEDIUM }
+            val slow = registry.filter { it.priority == PollPriority.SLOW }
             val values = mutableMapOf<Int, Double>()
             var cycle = 0
             var mediumIndex = 0
@@ -325,7 +330,7 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                 val now = System.currentTimeMillis()
                 val map = values[0x0B]
                 val barometric = values[0x33]
-                val maf = values[0x10]
+                val maf = values[0x66] ?: values[0x10]
                 val equivalenceRatio = values[0x44]
                 val reportedFuelRate = values[0x5E]
                 val estimatedFuelRate = if (reportedFuelRate == null) {
@@ -339,8 +344,8 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                         StandardPids.calculatedBoostPsi(map, barometric)
                     } else null,
                     throttlePercent = values[0x11],
-                    coolantC = values[0x05],
-                    intakeC = values[0x0F],
+                    coolantC = values[0x67] ?: values[0x05],
+                    intakeC = values[0x68] ?: values[0x0F],
                     shortFuelTrim = values[0x06],
                     longFuelTrim = values[0x07],
                     voltage = values[0x42],
@@ -576,6 +581,6 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
     }
 
     private companion object {
-        val DiagnosticPids = setOf(0x05, 0x0F, 0x10, 0x44, 0x5E)
+        val DiagnosticPids = setOf(0x05, 0x0F, 0x10, 0x44, 0x5E, 0x66, 0x67, 0x68)
     }
 }

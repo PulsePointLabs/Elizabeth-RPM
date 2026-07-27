@@ -13,8 +13,8 @@ android {
         applicationId = "com.pulsepointlabs.elizabethlive"
         minSdk = 31
         targetSdk = 36
-        versionCode = 13
-        versionName = "0.7.1-adaptive-routing"
+        versionCode = 14
+        versionName = "0.7.2-honda-multisensor"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }

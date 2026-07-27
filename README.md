@@ -6,6 +6,14 @@ Elizabeth Live is built with Kotlin, Jetpack Compose, Material 3, coroutines, St
 Room-ready storage seams, and Compose Canvas charts. No account, cloud service, advertising,
 analytics, or vehicle write commands are present.
 
+Version 0.7.2 corrects the live-data definitions for Elizabeth's newer Honda PCM. The vehicle
+does not answer the older single-sensor PIDs `0105`, `010F`, and `0110`; it uses the SAE J1979
+multi-sensor forms `0167` (coolant), `0168` (intake air), and `0166` (mass air flow). These
+responses begin with a sensor-support byte, so their temperature and airflow data require
+different byte positions and scaling. Elizabeth Live now polls and decodes those commands
+directly, uses `0166` for its clearly labeled MAF-based fuel estimate, and shows their sanitized
+raw replies in Health.
+
 Version 0.7.1 replaces the single-ECU assumption with automatic per-PID routing on 29-bit CAN.
 Each missing standard Mode 01 value is tried through PCM target `10`, the functional OBD address,
 and the other normal physical ECU targets `11` through `1F`. Successful routes are cached so

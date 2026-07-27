@@ -60,6 +60,31 @@ class Elm327ClientTest {
     }
 
     @Test
+    fun `initialization discovers multi sensor air and temperature PIDs`() = runTest {
+        val transport = ScriptedTransport(
+            mapOf(
+                "ATZ" to "ELM327 v2.3\r>",
+                "ATE0" to "OK\r>",
+                "ATL0" to "OK\r>",
+                "ATS0" to "OK\r>",
+                "ATH0" to "OK\r>",
+                "ATSP0" to "OK\r>",
+                "0100" to "41 00 00 00 00 01\r>",
+                "0120" to "41 20 00 00 00 01\r>",
+                "0140" to "41 40 00 00 00 01\r>",
+                "0160" to "41 60 07 00 00 00\r>",
+                "ATDP" to "ISO 15765-4 (CAN 11/500)\r>",
+            )
+        )
+
+        val supported = Elm327Client(transport).initialize { }.getOrThrow().supportedPids
+
+        assertTrue(0x66 in supported)
+        assertTrue(0x67 in supported)
+        assertTrue(0x68 in supported)
+    }
+
+    @Test
     fun `29 bit CAN initialization targets the physical engine ECU`() = runTest {
         val transport = ScriptedTransport(
             mapOf(
@@ -173,6 +198,17 @@ class Elm327ClientTest {
         assertEquals(PidReadStatus.VALUE, observation.status)
         assertEquals(83.0, observation.value!!, 0.001)
         assertEquals("0105 41 05 7B", observation.response)
+    }
+
+    @Test
+    fun `multi sensor coolant response skips support byte`() = runTest {
+        val coolant = StandardPids.registry.first { it.pid == 0x67 }
+        val observation = Elm327Client(
+            ScriptedTransport(mapOf("0167" to "41 67 01 82\r>"))
+        ).readObserved(coolant).getOrThrow()
+
+        assertEquals(PidReadStatus.VALUE, observation.status)
+        assertEquals(90.0, observation.value!!, 0.001)
     }
 
     @Test

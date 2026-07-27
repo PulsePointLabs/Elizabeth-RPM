@@ -28,6 +28,33 @@ object StandardPids {
         PidDefinition(1, 0x10, "Mass air flow", "g/s", PollPriority.MEDIUM) {
             if (it.size >= 2) ((it[0] * 256) + it[1]) / 100.0 else null
         },
+        PidDefinition(1, 0x66, "Mass air flow sensor A/B", "g/s", PollPriority.MEDIUM) {
+            when {
+                // Byte A reports installed sensors; B/C and D/E contain their readings.
+                it.size >= 3 && it[0] and 0x01 != 0 ->
+                    ((it[1] * 256) + it[2]) / 32.0
+                it.size >= 5 && it[0] and 0x02 != 0 ->
+                    ((it[3] * 256) + it[4]) / 32.0
+                else -> null
+            }
+        },
+        PidDefinition(1, 0x67, "Engine coolant temperature sensor", "°C", PollPriority.MEDIUM) {
+            when {
+                // Byte A reports installed sensors; prefer ECT1 (B), then ECT2 (C).
+                it.size >= 2 && it[0] and 0x01 != 0 -> it[1].minus(40).toDouble()
+                it.size >= 3 && it[0] and 0x02 != 0 -> it[2].minus(40).toDouble()
+                else -> null
+            }
+        },
+        PidDefinition(1, 0x68, "Intake-air temperature sensor", "°C", PollPriority.MEDIUM) { payload ->
+            // Byte A reports up to six installed IAT sensors. Use the first reported sensor.
+            (0 until 6).firstNotNullOfOrNull { sensor ->
+                payload.getOrNull(sensor + 1)
+                    ?.takeIf { payload[0] and (1 shl sensor) != 0 }
+                    ?.minus(40)
+                    ?.toDouble()
+            }
+        },
         PidDefinition(1, 0x11, "Throttle position", "%", PollPriority.FAST) {
             it.firstOrNull()?.times(100.0)?.div(255.0)
         },

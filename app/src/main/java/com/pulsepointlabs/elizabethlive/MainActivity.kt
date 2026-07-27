@@ -924,13 +924,13 @@ private fun HealthScreen(state: ElizabethUiState, viewModel: ElizabethViewModel)
 
 @Composable
 private fun PidDiagnosticsCard(state: ElizabethUiState) {
-    val watched = listOf(
-        0x05 to "Coolant",
-        0x0F to "Intake air",
-        0x10 to "Mass air flow",
-        0x5E to "Engine fuel rate",
-        0x44 to "Equivalence ratio",
-    )
+    val watched = buildList {
+        add(0x67 to "Coolant · multi-sensor")
+        add(0x68 to "Intake air · multi-sensor")
+        add(0x66 to "Mass air flow · multi-sensor")
+        add(0x5E to "Engine fuel rate")
+        add(0x44 to "Equivalence ratio")
+    }
     ElevatedCard(shape = RoundedCornerShape(22.dp)) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Live PID diagnostics", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)

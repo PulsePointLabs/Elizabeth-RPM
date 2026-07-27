@@ -24,6 +24,19 @@ class StandardPidsTest {
     }
 
     @Test
+    fun `multi sensor coolant and intake formulas skip support byte`() {
+        assertEquals(90.0, decoder(0x67)(listOf(0x03, 0x82, 0x7D))!!, 0.001)
+        assertEquals(30.0, decoder(0x68)(listOf(0x03, 0x46, 0x50))!!, 0.001)
+        assertEquals(40.0, decoder(0x68)(listOf(0x02, 0x00, 0x50))!!, 0.001)
+    }
+
+    @Test
+    fun `multi sensor MAF formula skips support byte and uses one thirty second scaling`() {
+        assertEquals(10.0, decoder(0x66)(listOf(0x01, 0x01, 0x40, 0x00, 0x00))!!, 0.001)
+        assertEquals(10.0, decoder(0x66)(listOf(0x02, 0x00, 0x00, 0x01, 0x40))!!, 0.001)
+    }
+
+    @Test
     fun `throttle formula scales zero to one hundred percent`() {
         assertEquals(50.196, decoder(0x11)(listOf(0x80))!!, 0.001)
     }
@@ -60,5 +73,8 @@ class StandardPidsTest {
     fun `short payload returns null instead of crashing`() {
         assertNull(decoder(0x0C)(listOf(0x2E)))
         assertNull(decoder(0x42)(emptyList()))
+        assertNull(decoder(0x66)(listOf(0x01, 0x01)))
+        assertNull(decoder(0x67)(listOf(0x01)))
+        assertNull(decoder(0x68)(listOf(0x01)))
     }
 }
