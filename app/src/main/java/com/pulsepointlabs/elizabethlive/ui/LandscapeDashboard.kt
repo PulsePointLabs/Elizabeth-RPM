@@ -15,6 +15,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,6 +44,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -77,6 +80,7 @@ import com.pulsepointlabs.elizabethlive.ui.theme.ThrottleAmber
 import com.pulsepointlabs.elizabethlive.ui.theme.WarningRed
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.max
@@ -100,6 +104,10 @@ fun LandscapeDashboard(
     } else null
     val durationSeconds = max(0L, (System.currentTimeMillis() - state.liveDriveStartedAtMillis) / 1_000L)
     var menuVisible by rememberSaveable { mutableStateOf(true) }
+    val pagerState = rememberPagerState(
+        pageCount = { DashboardPage.entries.size },
+    )
+    val pagerScope = rememberCoroutineScope()
 
     LaunchedEffect(menuVisible) {
         if (menuVisible) {
@@ -113,28 +121,41 @@ fun LandscapeDashboard(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        Row(
-            modifier = Modifier.fillMaxSize().padding(6.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize().padding(bottom = 42.dp),
+            beyondViewportPageCount = 1,
+            key = { DashboardPage.entries[it].name },
         ) {
-            FuelEconomyPanel(
-                sample = sample,
-                units = units,
-                distanceKm = state.liveDistanceKm,
-                fuelUsedLiters = state.liveFuelUsedLiters,
-                modifier = Modifier.weight(.27f).fillMaxHeight(),
-            )
-            CenterPanel(state, sample, units, Modifier.weight(.45f).fillMaxHeight())
-            SupportingPanel(
-                sample = sample,
-                units = units,
-                tripCost = tripCost,
-                durationSeconds = durationSeconds,
-                fuelPrice = price,
-                fuelUsedLiters = state.liveFuelUsedLiters,
-                modifier = Modifier.weight(.28f).fillMaxHeight(),
-            )
+            when (DashboardPage.entries[it]) {
+                DashboardPage.DRIVE -> CurrentDashboardPage(
+                    state = state,
+                    sample = sample,
+                    units = units,
+                    tripCost = tripCost,
+                    durationSeconds = durationSeconds,
+                    fuelPrice = price,
+                )
+                DashboardPage.ECONOMY -> EconomyDashboardPage(
+                    state = state,
+                    sample = sample,
+                    units = units,
+                    tripCost = tripCost,
+                    durationSeconds = durationSeconds,
+                )
+                DashboardPage.AIR_FUEL -> AirFuelDashboardPage(state, sample, units)
+                DashboardPage.CVT_CONTROL -> PowertrainDashboardPage(state, sample, units)
+                DashboardPage.CHASSIS -> ChassisDashboardPage(state, sample, units)
+                DashboardPage.ELECTRICAL -> ElectricalDashboardPage(state, sample, units)
+            }
         }
+        DashboardPageRail(
+            currentPage = pagerState.currentPage,
+            onPageSelected = { page ->
+                pagerScope.launch { pagerState.animateScrollToPage(page) }
+            },
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 3.dp),
+        )
         Box(
             Modifier
                 .align(Alignment.TopCenter)
@@ -183,6 +204,7 @@ fun LandscapeDashboard(
                 shadowElevation = 10.dp,
             ) {
                 DashboardHeader(
+                    pageTitle = DashboardPage.entries[pagerState.currentPage].label,
                     state = state,
                     onExit = onExit,
                     onToggleTrip = onToggleTrip,
@@ -195,7 +217,41 @@ fun LandscapeDashboard(
 }
 
 @Composable
+private fun CurrentDashboardPage(
+    state: ElizabethUiState,
+    sample: TelemetrySample?,
+    units: UnitSystem,
+    tripCost: Double?,
+    durationSeconds: Long,
+    fuelPrice: Double,
+) {
+    Row(
+        modifier = Modifier.fillMaxSize().padding(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        FuelEconomyPanel(
+            sample = sample,
+            units = units,
+            distanceKm = state.liveDistanceKm,
+            fuelUsedLiters = state.liveFuelUsedLiters,
+            modifier = Modifier.weight(.27f).fillMaxHeight(),
+        )
+        CenterPanel(state, sample, units, Modifier.weight(.45f).fillMaxHeight())
+        SupportingPanel(
+            sample = sample,
+            units = units,
+            tripCost = tripCost,
+            durationSeconds = durationSeconds,
+            fuelPrice = fuelPrice,
+            fuelUsedLiters = state.liveFuelUsedLiters,
+            modifier = Modifier.weight(.28f).fillMaxHeight(),
+        )
+    }
+}
+
+@Composable
 private fun DashboardHeader(
+    pageTitle: String,
     state: ElizabethUiState,
     onExit: () -> Unit,
     onToggleTrip: () -> Unit,
@@ -208,7 +264,7 @@ private fun DashboardHeader(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            "ELIZABETH",
+            "ELIZABETH · $pageTitle",
             fontSize = 20.sp,
             fontWeight = FontWeight.Black,
             letterSpacing = 1.4.sp,
@@ -286,7 +342,7 @@ private fun ImmersiveDashboardEffect() {
 }
 
 @Composable
-private fun FuelEconomyPanel(
+internal fun FuelEconomyPanel(
     sample: TelemetrySample?,
     units: UnitSystem,
     distanceKm: Double,

@@ -20,6 +20,7 @@ data class PidReadObservation(
     val value: Double?,
     val status: PidReadStatus,
     val response: String,
+    val payload: List<Int>? = null,
 )
 
 data class ElmVehicleDiagnostics(
@@ -178,6 +179,7 @@ class Elm327Client(private val transport: ObdTransport) {
                 } else {
                     val value = definition.decoder(payload)
                     PidReadObservation(
+                        payload = payload,
                         value = value,
                         status = if (value == null) {
                             PidReadStatus.DECODE_FAILED

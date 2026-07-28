@@ -31,6 +31,14 @@ class StandardPidsTest {
     }
 
     @Test
+    fun `multi sensor intake decoder preserves both reported temperatures`() {
+        assertEquals(
+            listOf(33.0, 45.0),
+            StandardPids.intakeAirTemperatures(listOf(0x03, 0x49, 0x55)),
+        )
+    }
+
+    @Test
     fun `multi sensor MAF formula skips support byte and uses one thirty second scaling`() {
         assertEquals(10.0, decoder(0x66)(listOf(0x01, 0x01, 0x40, 0x00, 0x00))!!, 0.001)
         assertEquals(10.0, decoder(0x66)(listOf(0x02, 0x00, 0x00, 0x01, 0x40))!!, 0.001)
@@ -61,6 +69,30 @@ class StandardPidsTest {
     fun `mass air flow and equivalence ratio decode standard formulas`() {
         assertEquals(10.0, decoder(0x10)(listOf(0x03, 0xE8))!!, 0.001)
         assertEquals(1.0, decoder(0x44)(listOf(0x80, 0x00))!!, 0.001)
+    }
+
+    @Test
+    fun `fuel rail pedal throttle lambda and torque formulas decode`() {
+        assertEquals(1_000.0, decoder(0x23)(listOf(0x00, 0x64))!!, 0.001)
+        assertEquals(1_000.0, decoder(0x59)(listOf(0x00, 0x64))!!, 0.001)
+        assertEquals(1.0, decoder(0x24)(listOf(0x80, 0x00, 0x00, 0x00))!!, 0.001)
+        assertEquals(1.0, decoder(0x34)(listOf(0x80, 0x00, 0x00, 0x00))!!, 0.001)
+        assertEquals(50.196, decoder(0x49)(listOf(0x80))!!, 0.001)
+        assertEquals(50.196, decoder(0x4C)(listOf(0x80))!!, 0.001)
+        assertEquals(0.0, decoder(0x61)(listOf(0x7D))!!, 0.001)
+        assertEquals(0.0, decoder(0x62)(listOf(0x7D))!!, 0.001)
+        assertEquals(300.0, decoder(0x63)(listOf(0x01, 0x2C))!!, 0.001)
+    }
+
+    @Test
+    fun `ambient and oil temperature use negative forty offset`() {
+        assertEquals(25.0, decoder(0x46)(listOf(0x41))!!, 0.001)
+        assertEquals(100.0, decoder(0x5C)(listOf(0x8C))!!, 0.001)
+    }
+
+    @Test
+    fun `absolute load supports values above one hundred percent`() {
+        assertEquals(200.0, decoder(0x43)(listOf(0x01, 0xFE))!!, 0.001)
     }
 
     @Test

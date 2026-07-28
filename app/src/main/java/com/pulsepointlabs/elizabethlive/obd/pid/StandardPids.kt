@@ -47,13 +47,7 @@ object StandardPids {
             }
         },
         PidDefinition(1, 0x68, "Intake-air temperature sensor", "°C", PollPriority.MEDIUM) { payload ->
-            // Byte A reports up to six installed IAT sensors. Use the first reported sensor.
-            (0 until 6).firstNotNullOfOrNull { sensor ->
-                payload.getOrNull(sensor + 1)
-                    ?.takeIf { payload[0] and (1 shl sensor) != 0 }
-                    ?.minus(40)
-                    ?.toDouble()
-            }
+            intakeAirTemperatures(payload).firstOrNull()
         },
         PidDefinition(1, 0x11, "Throttle position", "%", PollPriority.FAST) {
             it.firstOrNull()?.times(100.0)?.div(255.0)
@@ -85,10 +79,63 @@ object StandardPids {
         PidDefinition(1, 0x5E, "Engine fuel rate", "L/h", PollPriority.MEDIUM) {
             if (it.size >= 2) ((it[0] * 256) + it[1]) / 20.0 else null
         },
+        PidDefinition(1, 0x23, "Fuel-rail gauge pressure", "kPa", PollPriority.MEDIUM) {
+            if (it.size >= 2) ((it[0] * 256) + it[1]) * 10.0 else null
+        },
+        PidDefinition(1, 0x59, "Fuel-rail absolute pressure", "kPa", PollPriority.MEDIUM) {
+            if (it.size >= 2) ((it[0] * 256) + it[1]) * 10.0 else null
+        },
+        PidDefinition(1, 0x24, "Oxygen sensor B1S1 equivalence ratio", "λ", PollPriority.MEDIUM) {
+            if (it.size >= 2) ((it[0] * 256) + it[1]) / 32768.0 else null
+        },
+        PidDefinition(1, 0x34, "Wide-range oxygen sensor B1S1 equivalence ratio", "λ", PollPriority.MEDIUM) {
+            if (it.size >= 2) ((it[0] * 256) + it[1]) / 32768.0 else null
+        },
+        PidDefinition(1, 0x43, "Absolute engine load", "%", PollPriority.SLOW) {
+            if (it.size >= 2) ((it[0] * 256) + it[1]) * 100.0 / 255.0 else null
+        },
+        PidDefinition(1, 0x46, "Ambient-air temperature", "°C", PollPriority.SLOW) {
+            it.firstOrNull()?.minus(40)?.toDouble()
+        },
+        PidDefinition(1, 0x49, "Accelerator-pedal position D", "%", PollPriority.FAST) {
+            it.firstOrNull()?.times(100.0)?.div(255.0)
+        },
+        PidDefinition(1, 0x4C, "Commanded throttle actuator", "%", PollPriority.FAST) {
+            it.firstOrNull()?.times(100.0)?.div(255.0)
+        },
+        PidDefinition(1, 0x5A, "Relative accelerator-pedal position", "%", PollPriority.MEDIUM) {
+            it.firstOrNull()?.times(100.0)?.div(255.0)
+        },
+        PidDefinition(1, 0x5C, "Engine-oil temperature", "°C", PollPriority.SLOW) {
+            it.firstOrNull()?.minus(40)?.toDouble()
+        },
+        PidDefinition(1, 0x61, "Driver-demand engine torque", "%", PollPriority.MEDIUM) {
+            it.firstOrNull()?.minus(125)?.toDouble()
+        },
+        PidDefinition(1, 0x62, "Actual engine torque", "%", PollPriority.MEDIUM) {
+            it.firstOrNull()?.minus(125)?.toDouble()
+        },
+        PidDefinition(1, 0x63, "Engine reference torque", "N·m", PollPriority.SLOW) {
+            if (it.size >= 2) ((it[0] * 256) + it[1]).toDouble() else null
+        },
     )
 
     fun calculatedBoostPsi(mapKpa: Double, barometricKpa: Double): Double =
         (mapKpa - barometricKpa) * 0.1450377377
+
+    /**
+     * PID 0168 starts with a sensor-support bitfield followed by one byte per reported sensor.
+     * Preserve every reported temperature so Elizabeth can display IAT1 and IAT2/charge air.
+     */
+    fun intakeAirTemperatures(payload: List<Int>): List<Double> {
+        val support = payload.firstOrNull() ?: return emptyList()
+        return (0 until minOf(6, payload.size - 1)).mapNotNull { sensor ->
+            payload.getOrNull(sensor + 1)
+                ?.takeIf { support and (1 shl sensor) != 0 }
+                ?.minus(40)
+                ?.toDouble()
+        }
+    }
 }
 
 object Elm327ResponseParser {

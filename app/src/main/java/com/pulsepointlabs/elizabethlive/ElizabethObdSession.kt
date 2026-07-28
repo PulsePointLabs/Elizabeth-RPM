@@ -431,13 +431,21 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
              */
             // Poll both classic and newer multi-sensor forms. A support bitmap can merge ECU
             // replies or omit a directly readable PID, so the first successful form wins.
-            val registry = StandardPids.registry
+            val initiallyReported = state.value.supportedPids
+            val registry = StandardPids.registry.filter { definition ->
+                definition.pid in initiallyReported || definition.pid in CoreDirectProbePids
+            }
+            // Optional extended SAE values are polled only when the ECU advertises them. This keeps
+            // an unsupported convenience gauge from triggering a long 29-bit route search and
+            // starving RPM, MAP, throttle, or speed updates.
             val fast = registry.filter { it.priority == PollPriority.FAST }
             val medium = registry.filter { it.priority == PollPriority.MEDIUM }
             val slow = registry.filter { it.priority == PollPriority.SLOW }
             val values = mutableMapOf<Int, Double>()
+            val payloads = mutableMapOf<Int, List<Int>>()
             var cycle = 0
             var mediumIndex = 0
+            var slowIndex = 0
             var consecutiveFailures = 0
             var missingRpmCycles = 0
             var previousTimestamp = System.currentTimeMillis()
@@ -449,13 +457,17 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                         add(medium[mediumIndex % medium.size])
                         mediumIndex++
                     }
-                    if (cycle % 8 == 0) addAll(slow)
+                    if (cycle % 8 == 0 && slow.isNotEmpty()) {
+                        add(slow[slowIndex % slow.size])
+                        slowIndex++
+                    }
                 }.distinctBy { it.pid }
 
                 for (definition in batch) {
                     val result = elm.readObserved(definition)
                     if (result.isFailure) {
                         values.remove(definition.pid)
+                        payloads.remove(definition.pid)
                         consecutiveFailures++
                         updatePidDiagnostic(
                             definition.pid,
@@ -485,9 +497,11 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                         )
                         if (observation.value == null) {
                             values.remove(definition.pid)
+                            payloads.remove(definition.pid)
                         } else {
                             val value = observation.value
                             values[definition.pid] = value
+                            observation.payload?.let { payloads[definition.pid] = it }
                             mutableState.update {
                                 if (definition.pid in it.supportedPids) {
                                     it
@@ -504,6 +518,8 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                 val map = values[0x0B]
                 val barometric = values[0x33]
                 val maf = values[0x66] ?: values[0x10]
+                val intakeTemperatures = payloads[0x68]
+                    ?.let(StandardPids::intakeAirTemperatures).orEmpty()
                 val equivalenceRatio = values[0x44]
                 val reportedFuelRate = values[0x5E]
                 val estimatedFuelRate = if (reportedFuelRate == null) {
@@ -518,7 +534,7 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                     } else null,
                     throttlePercent = values[0x11],
                     coolantC = values[0x67] ?: values[0x05],
-                    intakeC = values[0x68] ?: values[0x0F],
+                    intakeC = intakeTemperatures.firstOrNull() ?: values[0x68] ?: values[0x0F],
                     shortFuelTrim = values[0x06],
                     longFuelTrim = values[0x07],
                     voltage = values[0x42],
@@ -527,7 +543,19 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                     fuelRateLitersPerHour = reportedFuelRate ?: estimatedFuelRate,
                     massAirFlowGramsPerSecond = maf,
                     commandedEquivalenceRatio = equivalenceRatio,
+                    actualEquivalenceRatio = values[0x24] ?: values[0x34],
                     fuelRateEstimated = reportedFuelRate == null && estimatedFuelRate != null,
+                    manifoldPressureKpa = map,
+                    barometricPressureKpa = barometric,
+                    chargeAirC = intakeTemperatures.getOrNull(1),
+                    fuelRailPressureKpa = values[0x23] ?: values[0x59],
+                    acceleratorPedalPercent = values[0x49] ?: values[0x5A],
+                    commandedThrottlePercent = values[0x4C],
+                    ambientC = values[0x46],
+                    oilC = values[0x5C],
+                    driverDemandTorquePercent = values[0x61],
+                    actualTorquePercent = values[0x62],
+                    referenceTorqueNm = values[0x63],
                 )
                 if (sample.rpm != null && sample.rpm > 0.0) {
                     missingRpmCycles = 0
@@ -1272,6 +1300,10 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
 
     private companion object {
         val DiagnosticPids = setOf(0x05, 0x0F, 0x10, 0x44, 0x5E, 0x66, 0x67, 0x68)
+        val CoreDirectProbePids = setOf(
+            0x04, 0x05, 0x06, 0x07, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11,
+            0x33, 0x42, 0x44, 0x5E, 0x66, 0x67, 0x68,
+        )
         val ReconnectBackoffMillis = listOf(1_000L, 2_000L, 4_000L, 8_000L, 15_000L, 30_000L, 60_000L)
         const val FLUSH_SAMPLE_BATCH_SIZE = 10
         const val FLUSH_INTERVAL_MILLIS = 5_000L
