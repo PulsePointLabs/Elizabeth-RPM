@@ -4,24 +4,23 @@ Elizabeth Live is a private, strictly read-only Android OBD-II monitor for Eliza
 2021 Honda Accord EX-L 1.5T CVT. It is designed for a Samsung Galaxy S25 Ultra and a paired
 Vgate vLinker MC+ using Bluetooth Classic and ELM327.
 
-Current release: **v1.1.0-sensor-pages**
+Current release: **v1.1.1-functional-pages**
 
-## Swipeable landscape sensor pages
+## Functional landscape sensor pages
 
-Landscape mode now keeps the existing Drive dashboard intact and adds horizontally swipeable
-pages for Economy, Air/Fuel, CVT/Control, Chassis, and Electrical data. A small bottom rail shows
-the current page without consuming dashboard space.
+Landscape mode keeps the Drive dashboard intact and provides five swipeable or directly tappable
+pages: Drive, Economy, Air/Fuel, Engine/Control, and Electrical/Thermal.
 
 The standard OBD reader now probes additional SAE Mode 01 values for fuel-rail pressure, measured
 lambda, accelerator-pedal position, commanded throttle, ambient and oil temperature, and engine
-torque. The second temperature exposed by Elizabeth's multi-sensor `0168` response is retained as
-charge-air temperature instead of being discarded.
+torque. Absolute engine load from PID `0143` is now carried through to the live dashboard, and the
+second temperature exposed by Elizabeth's multi-sensor `0168` response is retained as charge-air
+temperature.
 
-Honda-only data such as CVT fluid temperature, individual wheel speeds, steering/yaw, battery
-current/state of charge, brake pressure, and TPMS pressure is represented explicitly but remains
-unavailable until a command is verified for this exact platform. Elizabeth Live does not send
-guessed proprietary commands or display invented values. Unsupported measurements stay visibly
-marked as unavailable.
+Version 1.1.1 removes every unimplemented Honda-enhanced placeholder and the nonfunctional Chassis
+page. Optional standard tiles are created only after a real value has been received, so unsupported
+or unavailable measurements do not appear as broken gauges. Elizabeth Live still sends no guessed
+proprietary commands and never fabricates missing values.
 
 There are no accounts, cloud services, analytics, ads, subscriptions, actuator commands,
 DTC clearing, coding functions, ECU writes, or invented Honda commands.

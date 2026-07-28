@@ -144,8 +144,7 @@ fun LandscapeDashboard(
                     durationSeconds = durationSeconds,
                 )
                 DashboardPage.AIR_FUEL -> AirFuelDashboardPage(state, sample, units)
-                DashboardPage.CVT_CONTROL -> PowertrainDashboardPage(state, sample, units)
-                DashboardPage.CHASSIS -> ChassisDashboardPage(state, sample, units)
+                DashboardPage.ENGINE_CONTROL -> EngineControlDashboardPage(state, sample, units)
                 DashboardPage.ELECTRICAL -> ElectricalDashboardPage(state, sample, units)
             }
         }

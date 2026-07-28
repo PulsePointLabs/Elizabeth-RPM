@@ -551,6 +551,7 @@ class ElizabethObdSession(private val application: Application) : ObdSessionCont
                     fuelRailPressureKpa = values[0x23] ?: values[0x59],
                     acceleratorPedalPercent = values[0x49] ?: values[0x5A],
                     commandedThrottlePercent = values[0x4C],
+                    absoluteEngineLoad = values[0x43],
                     ambientC = values[0x46],
                     oilC = values[0x5C],
                     driverDemandTorquePercent = values[0x61],

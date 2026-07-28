@@ -43,15 +43,13 @@ internal enum class DashboardPage(val label: String) {
     DRIVE("DRIVE"),
     ECONOMY("ECONOMY"),
     AIR_FUEL("AIR + FUEL"),
-    CVT_CONTROL("CVT + CONTROL"),
-    CHASSIS("CHASSIS"),
+    ENGINE_CONTROL("ENGINE + CONTROL"),
     ELECTRICAL("ELECTRICAL"),
 }
 
 private enum class SensorSource(val badge: String) {
     STANDARD("SAE OBD"),
     CALCULATED("CALCULATED"),
-    HONDA("HONDA ENHANCED"),
 }
 
 private data class SensorTile(
@@ -132,7 +130,7 @@ internal fun EconomyDashboardPage(
     durationSeconds: Long,
 ) {
     val connected = state.connectionState == ConnectionState.CONNECTED
-    val averageSpeedKph = if (durationSeconds > 0) {
+    val averageSpeedKph = if (durationSeconds > 0 && state.liveDistanceKm > 0.01) {
         state.liveDistanceKm / (durationSeconds / 3_600.0)
     } else null
     Row(
@@ -147,70 +145,39 @@ internal fun EconomyDashboardPage(
             modifier = Modifier.weight(.48f).fillMaxHeight(),
         )
         SensorGrid(
-            rows = listOf(
-                listOf(
-                    SensorTile("TRIP COST", tripCost?.money(), "$", SensorSource.CALCULATED, accent = GoodGreen),
-                    SensorTile(
-                        "AVERAGE SPEED",
-                        averageSpeedKph?.speedValue(units),
-                        speedUnit(units),
-                        SensorSource.CALCULATED,
-                        accent = RpmBlue,
-                    ),
-                    SensorTile("DURATION", formatClock(durationSeconds), "", SensorSource.CALCULATED, accent = BoostTeal),
-                ),
-                listOf(
+            rows = tilesToRows(
+                tripCost?.let {
+                    SensorTile("TRIP COST", it.money(), "$", SensorSource.CALCULATED, accent = GoodGreen)
+                },
+                averageSpeedKph?.let {
+                    SensorTile("AVERAGE SPEED", it.speedValue(units), speedUnit(units), SensorSource.CALCULATED, accent = RpmBlue)
+                },
+                SensorTile("DURATION", formatClock(durationSeconds), "", SensorSource.CALCULATED, accent = BoostTeal),
+                sample?.fuelRateLitersPerHour?.let {
                     SensorTile(
                         "FUEL RATE",
-                        sample?.fuelRateLitersPerHour?.oneDecimal(),
+                        it.oneDecimal(),
                         "L/h",
-                        if (sample?.fuelRateEstimated == true) SensorSource.CALCULATED else SensorSource.STANDARD,
-                        pidLabel = if (sample?.fuelRateEstimated == true) "FROM MAF" else "01 5E",
+                        if (sample.fuelRateEstimated) SensorSource.CALCULATED else SensorSource.STANDARD,
+                        pidLabel = if (sample.fuelRateEstimated) "FROM MAF" else "01 5E",
                         accent = ThrottleAmber,
-                    ),
-                    SensorTile(
-                        "MASS AIR FLOW",
-                        sample?.massAirFlowGramsPerSecond?.oneDecimal(),
-                        "g/s",
-                        SensorSource.STANDARD,
-                        "01 66",
-                        BoostTeal,
-                    ),
-                    SensorTile(
-                        "COMMAND λ",
-                        sample?.commandedEquivalenceRatio?.threeDecimals(),
-                        "λ",
-                        SensorSource.STANDARD,
-                        "01 44",
-                        GoodGreen,
-                    ),
-                ),
-                listOf(
-                    SensorTile(
-                        "ACTUAL λ",
-                        sample?.actualEquivalenceRatio?.threeDecimals(),
-                        "λ",
-                        SensorSource.STANDARD,
-                        "01 24 / 34",
-                        GoodGreen,
-                    ),
-                    SensorTile(
-                        "SHORT TRIM",
-                        sample?.shortFuelTrim?.signedOneDecimal(),
-                        "%",
-                        SensorSource.STANDARD,
-                        "01 06",
-                        fuelTrimColor(sample?.shortFuelTrim),
-                    ),
-                    SensorTile(
-                        "LONG TRIM",
-                        sample?.longFuelTrim?.signedOneDecimal(),
-                        "%",
-                        SensorSource.STANDARD,
-                        "01 07",
-                        fuelTrimColor(sample?.longFuelTrim),
-                    ),
-                ),
+                    )
+                },
+                sample?.massAirFlowGramsPerSecond?.let {
+                    SensorTile("MASS AIR FLOW", it.oneDecimal(), "g/s", SensorSource.STANDARD, "01 66", BoostTeal)
+                },
+                sample?.commandedEquivalenceRatio?.let {
+                    SensorTile("COMMAND λ", it.threeDecimals(), "λ", SensorSource.STANDARD, "01 44", GoodGreen)
+                },
+                sample?.actualEquivalenceRatio?.let {
+                    SensorTile("ACTUAL λ", it.threeDecimals(), "λ", SensorSource.STANDARD, "01 24 / 34", GoodGreen)
+                },
+                sample?.shortFuelTrim?.let {
+                    SensorTile("SHORT TRIM", it.signedOneDecimal(), "%", SensorSource.STANDARD, "01 06", fuelTrimColor(it))
+                },
+                sample?.longFuelTrim?.let {
+                    SensorTile("LONG TRIM", it.signedOneDecimal(), "%", SensorSource.STANDARD, "01 07", fuelTrimColor(it))
+                },
             ),
             connected = connected,
             modifier = Modifier.weight(.52f).fillMaxHeight(),
@@ -227,129 +194,98 @@ internal fun AirFuelDashboardPage(
     SensorPage(
         title = "AIR + FUEL",
         subtitle = "Turbo breathing, charge temperature, direct injection, lambda, and correction",
-        rows = listOf(
-            listOf(
+        rows = tilesToRows(
+            sample?.boostPsi?.let {
                 SensorTile(
                     "BOOST / VACUUM",
-                    sample?.boostPsi?.let { if (units == UnitSystem.US) it.oneDecimal() else (it * 6.89476).oneDecimal() },
+                    if (units == UnitSystem.US) it.oneDecimal() else (it * 6.89476).oneDecimal(),
                     if (units == UnitSystem.US) "psi" else "kPa",
                     SensorSource.CALCULATED,
                     "MAP − BARO",
                     BoostTeal,
-                ),
-                SensorTile("MANIFOLD", sample?.manifoldPressureKpa?.oneDecimal(), "kPa", SensorSource.STANDARD, "01 0B", BoostTeal),
-                SensorTile("BAROMETRIC", sample?.barometricPressureKpa?.oneDecimal(), "kPa", SensorSource.STANDARD, "01 33", RpmBlue),
-                SensorTile("ENGINE LOAD", sample?.engineLoad?.oneDecimal(), "%", SensorSource.STANDARD, "01 04", ThrottleAmber),
-            ),
-            listOf(
-                SensorTile("INTAKE AIR", sample?.intakeC?.temperatureValue(units), temperatureUnit(units), SensorSource.STANDARD, "01 68 · IAT1", RpmBlue),
-                SensorTile("CHARGE AIR", sample?.chargeAirC?.temperatureValue(units), temperatureUnit(units), SensorSource.STANDARD, "01 68 · IAT2", BoostTeal),
-                SensorTile("MASS AIR FLOW", sample?.massAirFlowGramsPerSecond?.oneDecimal(), "g/s", SensorSource.STANDARD, "01 66", BoostTeal),
-                SensorTile("FUEL RAIL", sample?.fuelRailPressureKpa?.pressureValue(units), pressureUnit(units), SensorSource.STANDARD, "01 23 / 59", WarningRed),
-            ),
-            listOf(
-                SensorTile("COMMAND λ", sample?.commandedEquivalenceRatio?.threeDecimals(), "λ", SensorSource.STANDARD, "01 44", GoodGreen),
-                SensorTile("ACTUAL λ", sample?.actualEquivalenceRatio?.threeDecimals(), "λ", SensorSource.STANDARD, "01 24 / 34", GoodGreen),
-                SensorTile("SHORT TRIM", sample?.shortFuelTrim?.signedOneDecimal(), "%", SensorSource.STANDARD, "01 06", fuelTrimColor(sample?.shortFuelTrim)),
-                SensorTile("LONG TRIM", sample?.longFuelTrim?.signedOneDecimal(), "%", SensorSource.STANDARD, "01 07", fuelTrimColor(sample?.longFuelTrim)),
-            ),
+                )
+            },
+            sample?.manifoldPressureKpa?.let {
+                SensorTile("MANIFOLD", it.oneDecimal(), "kPa", SensorSource.STANDARD, "01 0B", BoostTeal)
+            },
+            sample?.barometricPressureKpa?.let {
+                SensorTile("BAROMETRIC", it.oneDecimal(), "kPa", SensorSource.STANDARD, "01 33", RpmBlue)
+            },
+            sample?.engineLoad?.let {
+                SensorTile("ENGINE LOAD", it.oneDecimal(), "%", SensorSource.STANDARD, "01 04", ThrottleAmber)
+            },
+            sample?.intakeC?.let {
+                SensorTile("INTAKE AIR", it.temperatureValue(units), temperatureUnit(units), SensorSource.STANDARD, "01 68 · IAT1", RpmBlue)
+            },
+            sample?.chargeAirC?.let {
+                SensorTile("CHARGE AIR", it.temperatureValue(units), temperatureUnit(units), SensorSource.STANDARD, "01 68 · IAT2", BoostTeal)
+            },
+            sample?.massAirFlowGramsPerSecond?.let {
+                SensorTile("MASS AIR FLOW", it.oneDecimal(), "g/s", SensorSource.STANDARD, "01 66", BoostTeal)
+            },
+            sample?.fuelRailPressureKpa?.let {
+                SensorTile("FUEL RAIL", it.pressureValue(units), pressureUnit(units), SensorSource.STANDARD, "01 23 / 59", WarningRed)
+            },
+            sample?.commandedEquivalenceRatio?.let {
+                SensorTile("COMMAND λ", it.threeDecimals(), "λ", SensorSource.STANDARD, "01 44", GoodGreen)
+            },
+            sample?.actualEquivalenceRatio?.let {
+                SensorTile("ACTUAL λ", it.threeDecimals(), "λ", SensorSource.STANDARD, "01 24 / 34", GoodGreen)
+            },
+            sample?.shortFuelTrim?.let {
+                SensorTile("SHORT TRIM", it.signedOneDecimal(), "%", SensorSource.STANDARD, "01 06", fuelTrimColor(it))
+            },
+            sample?.longFuelTrim?.let {
+                SensorTile("LONG TRIM", it.signedOneDecimal(), "%", SensorSource.STANDARD, "01 07", fuelTrimColor(it))
+            },
         ),
         connected = state.connectionState == ConnectionState.CONNECTED,
     )
 }
 
 @Composable
-internal fun PowertrainDashboardPage(
+internal fun EngineControlDashboardPage(
     state: ElizabethUiState,
     sample: TelemetrySample?,
     units: UnitSystem,
 ) {
     SensorPage(
-        title = "CVT + CONTROL",
-        subtitle = "Transmission condition, driver request, throttle management, ignition, and torque",
-        rows = listOf(
-            listOf(
-                enhancedTemperature("CVT FLUID", sample?.cvtFluidC, units),
-                enhancedNumber("CVT INPUT", sample?.cvtInputRpm, "rpm"),
-                enhancedNumber("CVT OUTPUT", sample?.cvtOutputRpm, "rpm"),
-                enhancedNumber("CVT RATIO", sample?.cvtRatio, ":1", decimals = 2),
-            ),
-            listOf(
-                enhancedNumber("LOCKUP", sample?.cvtLockupPercent, "%"),
-                SensorTile("PEDAL REQUEST", sample?.acceleratorPedalPercent?.oneDecimal(), "%", SensorSource.STANDARD, "01 49 / 5A", ThrottleAmber),
-                SensorTile("THROTTLE ACTUAL", sample?.throttlePercent?.oneDecimal(), "%", SensorSource.STANDARD, "01 11", ThrottleAmber),
-                SensorTile("THROTTLE COMMAND", sample?.commandedThrottlePercent?.oneDecimal(), "%", SensorSource.STANDARD, "01 4C", ThrottleAmber),
-            ),
-            listOf(
-                SensorTile("IGNITION TIMING", sample?.timingAdvance?.signedOneDecimal(), "°", SensorSource.STANDARD, "01 0E", RpmBlue),
-                enhancedNumber("KNOCK CONTROL", sample?.knockControlPercent, "%"),
-                SensorTile("TORQUE REQUEST", sample?.driverDemandTorquePercent?.signedOneDecimal(), "%", SensorSource.STANDARD, "01 61", BoostTeal),
-                SensorTile("TORQUE ACTUAL", sample?.actualTorquePercent?.signedOneDecimal(), "%", SensorSource.STANDARD, "01 62", BoostTeal),
-            ),
-            listOf(
-                SensorTile("REFERENCE TORQUE", sample?.referenceTorqueNm?.oneDecimal(), "N·m", SensorSource.STANDARD, "01 63", RpmBlue),
-                SensorTile("ENGINE RPM", sample?.rpm?.let { "%.0f".format(Locale.US, it) }, "rpm", SensorSource.STANDARD, "01 0C", RpmBlue),
-                SensorTile("ENGINE LOAD", sample?.engineLoad?.oneDecimal(), "%", SensorSource.STANDARD, "01 04", ThrottleAmber),
-                SensorTile("OIL TEMP", sample?.oilC?.temperatureValue(units), temperatureUnit(units), SensorSource.STANDARD, "01 5C", WarningRed),
-            ),
-        ),
-        connected = state.connectionState == ConnectionState.CONNECTED,
-    )
-}
-
-@Composable
-internal fun ChassisDashboardPage(
-    state: ElizabethUiState,
-    sample: TelemetrySample?,
-    units: UnitSystem,
-) {
-    SensorPage(
-        title = "CHASSIS",
-        subtitle = "ABS/VSA wheel speed, steering, body motion, braking, traction, and TPMS",
-        rows = listOf(
-            listOf(
-                enhancedSpeed("WHEEL · FRONT LEFT", sample?.wheelSpeedFrontLeftKph, units),
-                enhancedSpeed("WHEEL · FRONT RIGHT", sample?.wheelSpeedFrontRightKph, units),
-                enhancedSpeed("WHEEL · REAR LEFT", sample?.wheelSpeedRearLeftKph, units),
-                enhancedSpeed("WHEEL · REAR RIGHT", sample?.wheelSpeedRearRightKph, units),
-            ),
-            listOf(
-                enhancedNumber("STEERING ANGLE", sample?.steeringAngleDegrees, "°"),
-                enhancedNumber("YAW RATE", sample?.yawRateDegreesPerSecond, "°/s"),
-                enhancedNumber("LATERAL ACCEL", sample?.lateralAccelerationG, "g", decimals = 2),
-                enhancedNumber("LONGITUDINAL ACCEL", sample?.longitudinalAccelerationG, "g", decimals = 2),
-            ),
-            listOf(
-                enhancedNumber("BRAKE PRESSURE", sample?.brakePressureBar, "bar"),
-                SensorTile(
-                    "TRACTION / VSA",
-                    sample?.tractionControlActive?.let { if (it) "ACTIVE" else "IDLE" },
-                    "",
-                    SensorSource.HONDA,
-                    "ABS/VSA",
-                    if (sample?.tractionControlActive == true) WarningRed else GoodGreen,
-                ),
-                enhancedPressure("TIRE · FRONT LEFT", sample?.tirePressureFrontLeftKpa, units),
-                enhancedPressure("TIRE · FRONT RIGHT", sample?.tirePressureFrontRightKpa, units),
-            ),
-            listOf(
-                enhancedPressure("TIRE · REAR LEFT", sample?.tirePressureRearLeftKpa, units),
-                enhancedPressure("TIRE · REAR RIGHT", sample?.tirePressureRearRightKpa, units),
-                SensorTile("VEHICLE SPEED", sample?.speedKph?.speedValue(units), speedUnit(units), SensorSource.STANDARD, "01 0D", RpmBlue),
-                SensorTile(
-                    "MODULE STATUS",
-                    if (listOf(
-                            sample?.wheelSpeedFrontLeftKph,
-                            sample?.steeringAngleDegrees,
-                            sample?.brakePressureBar,
-                        ).any { it != null }
-                    ) "LIVE" else null,
-                    "",
-                    SensorSource.HONDA,
-                    "ABS / VSA / TPMS",
-                    GoodGreen,
-                ),
-            ),
+        title = "ENGINE + CONTROL",
+        subtitle = "Driver request, throttle management, ignition, load, and reported torque",
+        rows = tilesToRows(
+            sample?.rpm?.let {
+                SensorTile("ENGINE RPM", "%.0f".format(Locale.US, it), "rpm", SensorSource.STANDARD, "01 0C", RpmBlue)
+            },
+            sample?.engineLoad?.let {
+                SensorTile("ENGINE LOAD", it.oneDecimal(), "%", SensorSource.STANDARD, "01 04", ThrottleAmber)
+            },
+            sample?.absoluteEngineLoad?.let {
+                SensorTile("ABSOLUTE LOAD", it.oneDecimal(), "%", SensorSource.STANDARD, "01 43", ThrottleAmber)
+            },
+            sample?.acceleratorPedalPercent?.let {
+                SensorTile("PEDAL REQUEST", it.oneDecimal(), "%", SensorSource.STANDARD, "01 49 / 5A", ThrottleAmber)
+            },
+            sample?.throttlePercent?.let {
+                SensorTile("THROTTLE ACTUAL", it.oneDecimal(), "%", SensorSource.STANDARD, "01 11", ThrottleAmber)
+            },
+            sample?.commandedThrottlePercent?.let {
+                SensorTile("THROTTLE COMMAND", it.oneDecimal(), "%", SensorSource.STANDARD, "01 4C", ThrottleAmber)
+            },
+            sample?.timingAdvance?.let {
+                SensorTile("IGNITION TIMING", it.signedOneDecimal(), "°", SensorSource.STANDARD, "01 0E", RpmBlue)
+            },
+            sample?.driverDemandTorquePercent?.let {
+                SensorTile("TORQUE REQUEST", it.signedOneDecimal(), "%", SensorSource.STANDARD, "01 61", BoostTeal)
+            },
+            sample?.actualTorquePercent?.let {
+                SensorTile("TORQUE ACTUAL", it.signedOneDecimal(), "%", SensorSource.STANDARD, "01 62", BoostTeal)
+            },
+            sample?.referenceTorqueNm?.let {
+                SensorTile("REFERENCE TORQUE", it.oneDecimal(), "N·m", SensorSource.STANDARD, "01 63", RpmBlue)
+            },
+            sample?.oilC?.let {
+                SensorTile("OIL TEMP", it.temperatureValue(units), temperatureUnit(units), SensorSource.STANDARD, "01 5C", WarningRed)
+            },
         ),
         connected = state.connectionState == ConnectionState.CONNECTED,
     )
@@ -368,40 +304,39 @@ internal fun ElectricalDashboardPage(
     }
     SensorPage(
         title = "ELECTRICAL + THERMAL",
-        subtitle = "Honda intelligent charging, battery state, and the temperatures that explain heat soak",
-        rows = listOf(
-            listOf(
-                SensorTile("MODULE VOLTAGE", sample?.voltage?.twoDecimals(), "V", SensorSource.STANDARD, "01 42", voltageAccent),
-                enhancedNumber("BATTERY CURRENT", sample?.batteryCurrentAmps, "A"),
-                enhancedNumber("BATTERY SOC", sample?.batteryStateOfChargePercent, "%"),
-                enhancedNumber("CHARGE COMMAND", sample?.chargingCommandPercent, "%"),
-            ),
-            listOf(
-                SensorTile("AMBIENT AIR", sample?.ambientC?.temperatureValue(units), temperatureUnit(units), SensorSource.STANDARD, "01 46", RpmBlue),
-                SensorTile("INTAKE AIR", sample?.intakeC?.temperatureValue(units), temperatureUnit(units), SensorSource.STANDARD, "01 68 · IAT1", RpmBlue),
-                SensorTile("CHARGE AIR", sample?.chargeAirC?.temperatureValue(units), temperatureUnit(units), SensorSource.STANDARD, "01 68 · IAT2", BoostTeal),
-                SensorTile("COOLANT", sample?.coolantC?.temperatureValue(units), temperatureUnit(units), SensorSource.STANDARD, "01 67", WarningRed),
-            ),
-            listOf(
-                SensorTile("ENGINE OIL", sample?.oilC?.temperatureValue(units), temperatureUnit(units), SensorSource.STANDARD, "01 5C", WarningRed),
-                SensorTile("BAROMETRIC", sample?.barometricPressureKpa?.oneDecimal(), "kPa", SensorSource.STANDARD, "01 33", RpmBlue),
+        subtitle = "Live voltage, pressure, and temperatures reported by Elizabeth",
+        rows = tilesToRows(
+            sample?.voltage?.let {
+                SensorTile("MODULE VOLTAGE", it.twoDecimals(), "V", SensorSource.STANDARD, "01 42", voltageAccent)
+            },
+            sample?.ambientC?.let {
+                SensorTile("AMBIENT AIR", it.temperatureValue(units), temperatureUnit(units), SensorSource.STANDARD, "01 46", RpmBlue)
+            },
+            sample?.intakeC?.let {
+                SensorTile("INTAKE AIR", it.temperatureValue(units), temperatureUnit(units), SensorSource.STANDARD, "01 68 · IAT1", RpmBlue)
+            },
+            sample?.chargeAirC?.let {
+                SensorTile("CHARGE AIR", it.temperatureValue(units), temperatureUnit(units), SensorSource.STANDARD, "01 68 · IAT2", BoostTeal)
+            },
+            sample?.coolantC?.let {
+                SensorTile("COOLANT", it.temperatureValue(units), temperatureUnit(units), SensorSource.STANDARD, "01 67", WarningRed)
+            },
+            sample?.oilC?.let {
+                SensorTile("ENGINE OIL", it.temperatureValue(units), temperatureUnit(units), SensorSource.STANDARD, "01 5C", WarningRed)
+            },
+            sample?.barometricPressureKpa?.let {
+                SensorTile("BAROMETRIC", it.oneDecimal(), "kPa", SensorSource.STANDARD, "01 33", RpmBlue)
+            },
+            temperatureDelta(sample?.chargeAirC, sample?.ambientC, units)?.let {
                 SensorTile(
                     "IAT DELTA",
-                    temperatureDelta(sample?.chargeAirC, sample?.ambientC, units),
+                    it,
                     if (units == UnitSystem.US) "°F" else "°C",
                     SensorSource.CALCULATED,
                     "CHARGE − AMBIENT",
                     BoostTeal,
-                ),
-                SensorTile(
-                    "CHARGING STATUS",
-                    if (sample?.batteryCurrentAmps != null || sample?.batteryStateOfChargePercent != null) "LIVE" else null,
-                    "",
-                    SensorSource.HONDA,
-                    "BATTERY SENSOR",
-                    GoodGreen,
-                ),
-            ),
+                )
+            },
         ),
         connected = state.connectionState == ConnectionState.CONNECTED,
     )
@@ -444,6 +379,24 @@ private fun SensorGrid(
     connected: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    if (rows.isEmpty()) {
+        Surface(
+            modifier = modifier,
+            color = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(17.dp),
+        ) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    if (connected) "NO LIVE VALUES REPORTED ON THIS PAGE"
+                    else "CONNECT TO ELIZABETH TO LOAD AVAILABLE VALUES",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Black,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        return
+    }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         rows.forEach { row ->
             Row(
@@ -452,6 +405,9 @@ private fun SensorGrid(
             ) {
                 row.forEach { tile ->
                     SensorMetricTile(tile, connected, Modifier.weight(1f).fillMaxHeight())
+                }
+                repeat((4 - row.size).coerceAtLeast(0)) {
+                    Spacer(Modifier.weight(1f))
                 }
             }
         }
@@ -467,7 +423,6 @@ private fun SensorMetricTile(
     val availability = when {
         tile.value != null -> tile.note ?: "LIVE"
         !connected -> "WAITING FOR CONNECTION"
-        tile.source == SensorSource.HONDA -> "VERIFIED HONDA PROFILE REQUIRED"
         else -> "NOT REPORTED BY ECU"
     }
     Surface(
@@ -547,48 +502,8 @@ private fun SensorMetricTile(
     }
 }
 
-private fun enhancedNumber(
-    label: String,
-    value: Double?,
-    unit: String,
-    decimals: Int = 1,
-) = SensorTile(
-    label = label,
-    value = value?.let {
-        when (decimals) {
-            0 -> "%.0f".format(Locale.US, it)
-            2 -> "%.2f".format(Locale.US, it)
-            else -> "%.1f".format(Locale.US, it)
-        }
-    },
-    unit = unit,
-    source = SensorSource.HONDA,
-    accent = BoostTeal,
-)
-
-private fun enhancedTemperature(label: String, value: Double?, units: UnitSystem) = SensorTile(
-    label,
-    value?.temperatureValue(units),
-    temperatureUnit(units),
-    SensorSource.HONDA,
-    accent = WarningRed,
-)
-
-private fun enhancedSpeed(label: String, valueKph: Double?, units: UnitSystem) = SensorTile(
-    label,
-    valueKph?.speedValue(units),
-    speedUnit(units),
-    SensorSource.HONDA,
-    accent = RpmBlue,
-)
-
-private fun enhancedPressure(label: String, valueKpa: Double?, units: UnitSystem) = SensorTile(
-    label,
-    valueKpa?.tirePressureValue(units),
-    if (units == UnitSystem.US) "psi" else "kPa",
-    SensorSource.HONDA,
-    accent = GoodGreen,
-)
+private fun tilesToRows(vararg tiles: SensorTile?): List<List<SensorTile>> =
+    tiles.filterNotNull().chunked(4)
 
 private fun Double.oneDecimal() = String.format(Locale.US, "%.1f", this)
 private fun Double.twoDecimals() = String.format(Locale.US, "%.2f", this)
@@ -604,8 +519,6 @@ private fun speedUnit(units: UnitSystem) = if (units == UnitSystem.US) "mph" els
 private fun Double.pressureValue(units: UnitSystem) =
     if (units == UnitSystem.US) (this * 0.145037738).oneDecimal() else oneDecimal()
 private fun pressureUnit(units: UnitSystem) = if (units == UnitSystem.US) "psi" else "kPa"
-private fun Double.tirePressureValue(units: UnitSystem) =
-    if (units == UnitSystem.US) (this * 0.145037738).oneDecimal() else oneDecimal()
 
 private fun temperatureDelta(chargeC: Double?, ambientC: Double?, units: UnitSystem): String? {
     if (chargeC == null || ambientC == null) return null
