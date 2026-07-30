@@ -4,7 +4,19 @@ Elizabeth Live is a private, strictly read-only Android OBD-II monitor for Eliza
 2021 Honda Accord EX-L 1.5T CVT. It is designed for a Samsung Galaxy S25 Ultra and a paired
 Vgate vLinker MC+ using Bluetooth Classic and ELM327.
 
-Current release: **v1.1.1-functional-pages**
+Current release: **v1.2.0-parameter-help**
+
+## Landscape parameter help and readability
+
+Version 1.2.0 adds a visible information button to every landscape sensor card. Each button opens
+a plain-English explanation of what the parameter measures, how to interpret it, its current value,
+and the standard OBD-II PID or calculated-data source. The help text avoids fixed diagnostic claims
+and keeps ECU-reported, calculated, estimated, and unavailable data clearly distinguished.
+
+Secondary labels, units, status text, page descriptions, and page-navigation labels are larger for
+glanceability on the Galaxy S25 Ultra. The Economy page now uses three wider metric columns instead
+of four cramped columns, and technical PID badges have moved below the reading so parameter names no
+longer compete for header space or truncate into ambiguous abbreviations.
 
 ## Functional landscape sensor pages
 
