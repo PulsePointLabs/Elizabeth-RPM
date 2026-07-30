@@ -233,6 +233,7 @@ private fun CurrentDashboardPage(
             units = units,
             distanceKm = state.liveDistanceKm,
             fuelUsedLiters = state.liveFuelUsedLiters,
+            compact = true,
             modifier = Modifier.weight(.27f).fillMaxHeight(),
         )
         CenterPanel(state, sample, units, Modifier.weight(.45f).fillMaxHeight())
@@ -346,6 +347,7 @@ internal fun FuelEconomyPanel(
     units: UnitSystem,
     distanceKm: Double,
     fuelUsedLiters: Double,
+    compact: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val average = when (units) {
@@ -405,27 +407,46 @@ internal fun FuelEconomyPanel(
                 Text(
                     "FUEL ECONOMY",
                     modifier = Modifier.weight(1f),
-                    fontSize = 15.sp,
+                    fontSize = if (compact) 13.sp else 15.sp,
                     fontWeight = FontWeight.Black,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    fuelSource,
-                    modifier = Modifier
-                        .background(averageColor.copy(alpha = .11f), CircleShape)
-                        .padding(horizontal = 7.dp, vertical = 3.dp),
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Black,
-                    color = averageColor,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
-                Spacer(Modifier.width(6.dp))
+                if (!compact) {
+                    Text(
+                        fuelSource,
+                        modifier = Modifier
+                            .background(averageColor.copy(alpha = .11f), CircleShape)
+                            .padding(horizontal = 7.dp, vertical = 3.dp),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Black,
+                        color = averageColor,
+                        maxLines = 1,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                }
                 LandscapeParameterInfoButton(
                     label = "AVERAGE FUEL ECONOMY",
                     value = average?.oneDecimal(),
                     unit = economyUnit,
                     source = fuelSource,
                     accent = averageColor,
+                )
+            }
+            if (compact) {
+                Text(
+                    fuelSource,
+                    modifier = Modifier
+                        .align(Alignment.Start)
+                        .padding(top = 2.dp)
+                        .background(averageColor.copy(alpha = .11f), CircleShape)
+                        .padding(horizontal = 7.dp, vertical = 2.dp),
+                    fontSize = 9.sp,
+                    lineHeight = 10.sp,
+                    fontWeight = FontWeight.Black,
+                    color = averageColor,
+                    maxLines = 1,
                 )
             }
             EconomyGauge(
@@ -440,6 +461,7 @@ internal fun FuelEconomyPanel(
                 progress = liveProgress,
                 color = liveColor,
                 source = fuelSource,
+                compact = compact,
             )
             Spacer(Modifier.height(7.dp))
             Row(
@@ -451,6 +473,7 @@ internal fun FuelEconomyPanel(
                     value = distanceValue,
                     unit = distanceUnit,
                     source = "CALCULATED FROM VEHICLE SPEED",
+                    compact = compact,
                     modifier = Modifier.weight(1f),
                 )
                 EconomyFact(
@@ -458,6 +481,7 @@ internal fun FuelEconomyPanel(
                     value = fuelValue,
                     unit = fuelUnit,
                     source = fuelSource,
+                    compact = compact,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -587,6 +611,7 @@ private fun LiveEconomyCard(
     progress: Float,
     color: Color,
     source: String,
+    compact: Boolean,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -603,25 +628,29 @@ private fun LiveEconomyCard(
                         fontWeight = FontWeight.Black,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Text(
-                        "CURRENT EFFICIENCY",
-                        fontSize = 10.sp,
-                        lineHeight = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .72f),
-                    )
+                    if (!compact) {
+                        Text(
+                            "CURRENT EFFICIENCY",
+                            fontSize = 10.sp,
+                            lineHeight = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .72f),
+                        )
+                    }
                 }
-                LandscapeParameterInfoButton(
-                    label = "REAL-TIME FUEL ECONOMY",
-                    value = value.takeUnless { it == "—" },
-                    unit = "",
-                    source = source,
-                    accent = color,
-                )
-                Spacer(Modifier.width(7.dp))
+                if (!compact) {
+                    LandscapeParameterInfoButton(
+                        label = "REAL-TIME FUEL ECONOMY",
+                        value = value.takeUnless { it == "—" },
+                        unit = "",
+                        source = source,
+                        accent = color,
+                    )
+                    Spacer(Modifier.width(7.dp))
+                }
                 Text(
                     value,
-                    fontSize = 22.sp,
+                    fontSize = if (compact) 20.sp else 22.sp,
                     lineHeight = 23.sp,
                     fontWeight = FontWeight.Black,
                     color = color,
@@ -641,6 +670,7 @@ private fun EconomyFact(
     value: String,
     unit: String,
     source: String,
+    compact: Boolean,
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -654,21 +684,23 @@ private fun EconomyFact(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    label,
+                    if (compact && label == "TRIP DISTANCE") "DISTANCE" else label,
                     modifier = Modifier.weight(1f),
-                    fontSize = 10.sp,
+                    fontSize = if (compact) 9.sp else 10.sp,
                     lineHeight = 11.sp,
                     fontWeight = FontWeight.Black,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )
-                LandscapeParameterInfoButton(
-                    label = label,
-                    value = value,
-                    unit = unit,
-                    source = source,
-                    accent = GoodGreen,
-                )
+                if (!compact) {
+                    LandscapeParameterInfoButton(
+                        label = label,
+                        value = value,
+                        unit = unit,
+                        source = source,
+                        accent = GoodGreen,
+                    )
+                }
             }
             Row(verticalAlignment = Alignment.Bottom) {
                 Text(
