@@ -18,6 +18,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.room.withTransaction
 import com.pulsepointlabs.elizabethlive.SavedTrip
 import com.pulsepointlabs.elizabethlive.SavedTripSummary
+import com.pulsepointlabs.elizabethlive.FuelDataSource
 import com.pulsepointlabs.elizabethlive.TelemetrySample
 import com.pulsepointlabs.elizabethlive.TripEvent
 import com.pulsepointlabs.elizabethlive.TripSummary
@@ -327,6 +328,9 @@ class TripRepository(private val database: ElizabethDatabase) {
             summary = trip.toSummary(),
             samples = dao.getSamples(tripId).map(TripSampleEntity::toSample),
             events = dao.getEvents(tripId).map(TripEventEntity::toEvent),
+            fuelDataSource = trip.parsedFuelDataSource(),
+            wasRecovered = trip.wasRecovered,
+            reconnectCount = trip.reconnectCount,
         )
     }
 
@@ -357,7 +361,13 @@ private fun TripEntity.toSavedSummary() = SavedTripSummary(
     startedAtMillis = startedAtMillis,
     endedAtMillis = endedAtMillis,
     summary = toSummary(),
+    fuelDataSource = parsedFuelDataSource(),
+    wasRecovered = wasRecovered,
+    reconnectCount = reconnectCount,
 )
+
+private fun TripEntity.parsedFuelDataSource(): FuelDataSource =
+    runCatching { FuelDataSource.valueOf(fuelDataSource) }.getOrDefault(FuelDataSource.UNAVAILABLE)
 
 private fun TripEntity.toSummary() = TripSummary(
     startedAtMillis = startedAtMillis,

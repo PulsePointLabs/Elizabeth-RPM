@@ -4,7 +4,25 @@ Elizabeth Live is a private, strictly read-only Android OBD-II monitor for Eliza
 2021 Honda Accord EX-L 1.5T CVT. It is designed for a Samsung Galaxy S25 Ultra and a paired
 Vgate vLinker MC+ using Bluetooth Classic and ELM327.
 
-Current release: **v1.2.1-compact-fuel-panel**
+Current release: **v1.3.0-trip-insights**
+
+## Interactive trip history
+
+Version 1.3.0 turns saved trip details into a usable review screen. The full-trip chart has a
+color legend, tappable RPM/boost/throttle channel controls, tap-and-drag inspection with values and
+trip-relative time, and visible event markers. Saved trips now show average fuel economy, fuel used,
+estimated cost at the currently configured price, sampled average fuel rate, fuel-data coverage,
+and whether fuel was ECU-reported or estimated from mass airflow. Missing fuel data remains
+unavailable rather than appearing as zero.
+
+Trip history rows now respect the selected unit system and include fuel cost/source context plus
+recovery or reconnect notes when applicable. The detail page also shows start/end times, sample and
+event counts, moving-sample percentage, and connection recovery information. No Room migration is
+needed because this release exposes metadata that the existing database already persisted.
+
+Android Back now returns from trip detail to the trip list and then follows the visible tab history
+before allowing the activity to close. Tapping the selected Trip destination while viewing a saved
+trip also returns to the trip list.
 
 ## Compact Drive-page fuel panel
 

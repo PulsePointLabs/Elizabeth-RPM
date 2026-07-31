@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -96,6 +97,8 @@ import com.pulsepointlabs.elizabethlive.ui.components.FuelTrimBalance
 import com.pulsepointlabs.elizabethlive.ui.components.RollingTelemetryChart
 import com.pulsepointlabs.elizabethlive.ui.components.VoltageSparkline
 import com.pulsepointlabs.elizabethlive.trip.FuelCostCalculator
+import com.pulsepointlabs.elizabethlive.trip.TripHistoryMetrics
+import com.pulsepointlabs.elizabethlive.trip.TripHistoryMetricsCalculator
 import com.pulsepointlabs.elizabethlive.overlay.FloatingTripOverlay
 import com.pulsepointlabs.elizabethlive.overlay.FloatingTripOverlayService
 import com.pulsepointlabs.elizabethlive.ui.theme.BoostTeal
@@ -245,15 +248,22 @@ private fun ElizabethApp(
         Destination("Health", Icons.Rounded.FavoriteBorder),
     )
     var selected by rememberSaveable { mutableIntStateOf(0) }
+    var navigationHistory by rememberSaveable { mutableStateOf(listOf(0)) }
     var dashboardDismissed by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(navigationRequest) {
         when {
             navigationRequest.tripId != null -> {
                 selected = 1
+                if (navigationHistory.lastOrNull() != 1) {
+                    navigationHistory = (navigationHistory + 1).takeLast(10)
+                }
                 viewModel.selectTrip(navigationRequest.tripId)
             }
             navigationRequest.openDashboard -> {
                 selected = 0
+                if (navigationHistory.lastOrNull() != 0) {
+                    navigationHistory = (navigationHistory + 0).takeLast(10)
+                }
                 dashboardDismissed = false
                 (context as? android.app.Activity)?.requestedOrientation =
                     ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -275,6 +285,22 @@ private fun ElizabethApp(
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     LaunchedEffect(isLandscape) {
         if (!isLandscape) dashboardDismissed = false
+    }
+    BackHandler(
+        enabled = (!isLandscape || dashboardDismissed) &&
+            (state.selectedTrip != null || navigationHistory.size > 1 || selected != 0),
+    ) {
+        if (selected == 1 && state.selectedTrip != null) {
+            viewModel.closeTripDetail()
+        } else {
+            val withoutCurrent = if (navigationHistory.lastOrNull() == selected) {
+                navigationHistory.dropLast(1)
+            } else {
+                navigationHistory
+            }
+            navigationHistory = withoutCurrent.ifEmpty { listOf(0) }
+            selected = navigationHistory.last()
+        }
     }
     if (isLandscape && !dashboardDismissed) {
         LandscapeDashboard(
@@ -303,7 +329,14 @@ private fun ElizabethApp(
                 destinations.forEachIndexed { index, destination ->
                     NavigationBarItem(
                         selected = selected == index,
-                        onClick = { selected = index },
+                        onClick = {
+                            if (selected == index && index == 1 && state.selectedTrip != null) {
+                                viewModel.closeTripDetail()
+                            } else if (selected != index) {
+                                selected = index
+                                navigationHistory = (navigationHistory + index).takeLast(10)
+                            }
+                        },
                         icon = { Icon(destination.icon, null) },
                         label = { Text(destination.label, fontSize = 14.sp) },
                         colors = NavigationBarItemDefaults.colors(
@@ -699,6 +732,7 @@ private fun TripScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
             trip = selectedTrip,
             units = state.settings.units,
             smoothing = state.settings.smoothing,
+            fuelPricePerGallon = state.settings.fuelPricePerGallon,
             onBack = viewModel::closeTripDetail,
             onDelete = { viewModel.deleteSavedTrip(selectedTrip.id) },
         )
@@ -799,7 +833,11 @@ private fun TripScreen(state: ElizabethUiState, viewModel: ElizabethViewModel) {
             }
         }
         items(state.savedTrips, key = { it.id }) { saved ->
-            SavedTripRow(saved, state.settings.units) { viewModel.selectTrip(saved.id) }
+            SavedTripRow(
+                trip = saved,
+                units = state.settings.units,
+                fuelPricePerGallon = state.settings.fuelPricePerGallon,
+            ) { viewModel.selectTrip(saved.id) }
         }
         item {
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
@@ -1222,12 +1260,21 @@ private fun DriveAutomationHealthCard(
 private fun SavedTripRow(
     trip: SavedTripSummary,
     units: UnitSystem,
+    fuelPricePerGallon: Double,
     onClick: () -> Unit,
 ) {
     val summary = trip.summary
-    val economy = if (summary.fuelUsedLiters > 0.0 && summary.distanceKm > 0.0) {
-        (summary.distanceKm * .621371) / (summary.fuelUsedLiters * .264172)
-    } else null
+    val metrics = TripHistoryMetricsCalculator.calculate(
+        summary = summary,
+        samples = emptyList(),
+        savedFuelSource = trip.fuelDataSource,
+        pricePerGallon = fuelPricePerGallon,
+    )
+    val economy = if (units == UnitSystem.US) {
+        metrics.averageMpg?.let { "${it.oneDecimal()} MPG" }
+    } else {
+        metrics.averageLitersPer100Km?.let { "${it.oneDecimal()} L/100 km" }
+    }
     ElevatedCard(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
         shape = RoundedCornerShape(20.dp),
@@ -1257,7 +1304,7 @@ private fun SavedTripRow(
                     shape = RoundedCornerShape(14.dp),
                 ) {
                     Text(
-                        economy?.let { "${it.oneDecimal()} MPG" } ?: "Saved",
+                        economy ?: "Saved",
                         Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                         color = GoodGreen,
                         fontWeight = FontWeight.Bold,
@@ -1272,6 +1319,30 @@ private fun SavedTripRow(
                     if (units == UnitSystem.US) "${summary.maximumBoostPsi.oneDecimal()} psi"
                     else "${(summary.maximumBoostPsi * 6.89476).oneDecimal()} kPa",
                     Modifier.weight(1f),
+                )
+            }
+            if (metrics.estimatedFuelCost != null) {
+                val fuelUsedText = if (units == UnitSystem.US) {
+                    metrics.fuelUsedGallons?.let { "${it.twoDecimals()} gal" }
+                } else {
+                    summary.fuelUsedLiters.takeIf { it > 0.001 }?.let { "${it.twoDecimals()} L" }
+                } ?: "Fuel used unavailable"
+                Text(
+                    "${metrics.fuelSourceLabel} · $fuelUsedText · " +
+                        "$${metrics.estimatedFuelCost.money()} at $${fuelPricePerGallon.money()}/gal",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (trip.wasRecovered || trip.reconnectCount > 0) {
+                Text(
+                    buildList {
+                        if (trip.wasRecovered) add("Recovered after interruption")
+                        if (trip.reconnectCount > 0) add("${trip.reconnectCount} reconnect${if (trip.reconnectCount == 1) "" else "s"}")
+                    }.joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ThrottleAmber,
+                    fontWeight = FontWeight.SemiBold,
                 )
             }
             Text(
@@ -1300,12 +1371,25 @@ private fun SavedTripDetailScreen(
     trip: SavedTrip,
     units: UnitSystem,
     smoothing: Boolean,
+    fuelPricePerGallon: Double,
     onBack: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val context = LocalContext.current
     var inspectedSample by remember { mutableStateOf<TelemetrySample?>(null) }
+    var selectedChannels by remember(trip.id) {
+        mutableStateOf(setOf("RPM", "Boost", "Throttle"))
+    }
     var confirmDelete by remember { mutableStateOf(false) }
+    val historyMetrics = remember(trip, fuelPricePerGallon) {
+        TripHistoryMetricsCalculator.calculate(
+            summary = trip.summary,
+            samples = trip.samples,
+            savedFuelSource = trip.fuelDataSource,
+            pricePerGallon = fuelPricePerGallon,
+        )
+    }
+    BackHandler(onBack = onBack)
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/csv")
     ) { uri ->
@@ -1369,24 +1453,73 @@ private fun SavedTripDetailScreen(
         }
         item {
             ElevatedCard(shape = RoundedCornerShape(22.dp)) {
-                Column(Modifier.padding(18.dp)) {
-                    Text("Full-trip timeline", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Text(
-                        "${trip.samples.size} locally recorded samples",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                Column(
+                    Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Full-trip timeline", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                            Text(
+                                "${trip.samples.size} locally recorded samples · tap or drag to inspect",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (trip.events.isNotEmpty()) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(Modifier.size(8.dp).clip(CircleShape).background(ThrottleAmber))
+                                Spacer(Modifier.width(5.dp))
+                                Text("Event", style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                    }
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ChannelChip("RPM", RpmBlue, "rpm", selectedChannels) { channel ->
+                            selectedChannels = selectedChannels.toggledChannel(channel)
+                        }
+                        ChannelChip(
+                            "Boost",
+                            BoostTeal,
+                            if (units == UnitSystem.US) "psi" else "kPa",
+                            selectedChannels,
+                        ) { channel -> selectedChannels = selectedChannels.toggledChannel(channel) }
+                        ChannelChip("Throttle", ThrottleAmber, "%", selectedChannels) { channel ->
+                            selectedChannels = selectedChannels.toggledChannel(channel)
+                        }
+                    }
                     Spacer(Modifier.height(10.dp))
                     RollingTelemetryChart(
                         samples = trip.samples,
-                        channels = setOf("RPM", "Boost", "Throttle"),
+                        channels = selectedChannels,
                         inspected = inspectedSample,
                         modifier = Modifier.height(230.dp),
                         smoothing = smoothing,
-                        onTap = { inspectedSample = null },
+                        eventTimestamps = trip.events.map { it.timestampMillis },
+                        onTap = { },
                         onInspect = { inspectedSample = it },
                     )
+                    val displayedSample = inspectedSample ?: trip.samples.lastOrNull()
+                    GraphLegend(displayedSample, selectedChannels, units)
+                    inspectedSample?.let { sample ->
+                        Text(
+                            "Inspected at +${formatTripDuration(((sample.timestampMillis - trip.startedAtMillis).coerceAtLeast(0L)) / 1_000L)}",
+                            modifier = Modifier.fillMaxWidth(),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
                 }
             }
+        }
+        item {
+            TripFuelEconomyCard(
+                metrics = historyMetrics,
+                summary = trip.summary,
+                units = units,
+                fuelPricePerGallon = fuelPricePerGallon,
+            )
         }
         item {
             FlowRow(
@@ -1408,6 +1541,12 @@ private fun SavedTripDetailScreen(
         }
         item { RangeSummaryCard(trip.summary, units) }
         item {
+            TripRecordCard(
+                trip = trip,
+                metrics = historyMetrics,
+            )
+        }
+        item {
             Text("Notable events", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         }
         if (trip.events.isEmpty()) {
@@ -1417,6 +1556,120 @@ private fun SavedTripDetailScreen(
             EventRow(event, trip.startedAtMillis)
         }
         item { Spacer(Modifier.height(8.dp)) }
+    }
+}
+
+private fun Set<String>.toggledChannel(channel: String): Set<String> {
+    val next = if (channel in this) this - channel else this + channel
+    return next.takeIf { it.isNotEmpty() } ?: this
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun TripFuelEconomyCard(
+    metrics: TripHistoryMetrics,
+    summary: TripSummary,
+    units: UnitSystem,
+    fuelPricePerGallon: Double,
+) {
+    val economyText = if (units == UnitSystem.US) {
+        metrics.averageMpg?.let { "${it.oneDecimal()} MPG" }
+    } else {
+        metrics.averageLitersPer100Km?.let { "${it.oneDecimal()} L/100 km" }
+    } ?: "Unavailable"
+    val fuelUsedText = if (units == UnitSystem.US) {
+        metrics.fuelUsedGallons?.let { "${it.twoDecimals()} gal" }
+    } else {
+        summary.fuelUsedLiters.takeIf { it > 0.001 }?.let { "${it.twoDecimals()} L" }
+    } ?: "Unavailable"
+    val averageRate = metrics.averageFuelRateLitersPerHour?.let { "${it.oneDecimal()} L/h" }
+        ?: "Unavailable"
+    ElevatedCard(shape = RoundedCornerShape(22.dp)) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Fuel economy", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(
+                        metrics.fuelSourceLabel,
+                        color = if (metrics.averageMpg == null) ThrottleAmber else GoodGreen,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                Surface(
+                    color = GoodGreen.copy(alpha = .13f),
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Text(
+                        economyText,
+                        Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        color = if (metrics.averageMpg == null) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            GoodGreen
+                        },
+                        fontWeight = FontWeight.Black,
+                    )
+                }
+            }
+            FlowRow(
+                maxItemsInEachRow = 2,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                SummaryTile("Fuel used", fuelUsedText)
+                SummaryTile(
+                    "Estimated cost",
+                    metrics.estimatedFuelCost?.let { "$${it.money()}" } ?: "Unavailable",
+                )
+                SummaryTile("Average fuel rate", averageRate)
+                SummaryTile("Fuel-data coverage", "${metrics.fuelDataCoveragePercent}%")
+            }
+            Text(
+                "Cost uses the current saved fuel price of $${fuelPricePerGallon.money()} per gallon. " +
+                    "Fuel economy is hidden when the required distance or fuel data is missing.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun TripRecordCard(
+    trip: SavedTrip,
+    metrics: TripHistoryMetrics,
+) {
+    ElevatedCard(shape = RoundedCornerShape(22.dp)) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Trip record", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            DetailRow(
+                "Started",
+                DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+                    .format(Date(trip.startedAtMillis)),
+            )
+            DetailRow(
+                "Ended",
+                DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+                    .format(Date(trip.endedAtMillis)),
+            )
+            DetailRow("Samples", trip.samples.size.toString())
+            DetailRow("Notable events", trip.events.size.toString())
+            DetailRow(
+                "Moving samples",
+                metrics.movingSamplePercent?.let { "$it% of speed samples" } ?: "Speed unavailable",
+            )
+            DetailRow(
+                "Connection recovery",
+                when {
+                    trip.wasRecovered && trip.reconnectCount > 0 ->
+                        "Recovered after process interruption · ${trip.reconnectCount} reconnects"
+                    trip.wasRecovered -> "Recovered after process interruption"
+                    trip.reconnectCount > 0 ->
+                        "${trip.reconnectCount} reconnect${if (trip.reconnectCount == 1) "" else "s"}"
+                    else -> "No reconnects recorded"
+                },
+            )
+        }
     }
 }
 
@@ -1773,6 +2026,7 @@ private fun statusForTemperature(coolant: Double?): String = when {
 }
 
 private fun Double.oneDecimal(): String = String.format(Locale.US, "%.1f", this)
+private fun Double.twoDecimals(): String = String.format(Locale.US, "%.2f", this)
 private fun Double.money(): String = String.format(Locale.US, "%.2f", this)
 private fun Double.signedPercent(): String = String.format(Locale.US, "%+.1f%%", this)
 private fun Double.temperature(units: UnitSystem): String =

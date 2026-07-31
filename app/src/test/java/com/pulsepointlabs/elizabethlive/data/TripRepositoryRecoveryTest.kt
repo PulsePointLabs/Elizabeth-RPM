@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.pulsepointlabs.elizabethlive.TelemetrySample
 import com.pulsepointlabs.elizabethlive.TripEvent
 import com.pulsepointlabs.elizabethlive.TripSummary
+import com.pulsepointlabs.elizabethlive.FuelDataSource
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -97,6 +98,9 @@ class TripRepositoryRecoveryTest {
         assertNotNull(completed)
         assertEquals(2, completed!!.samples.size)
         assertFalse(completed.summary.isRecording)
+        assertEquals(FuelDataSource.UNAVAILABLE, completed.fuelDataSource)
+        assertTrue(completed.wasRecovered)
+        assertEquals(2, completed.reconnectCount)
         val entity = database.tripDao().getTrip(tripId)
         assertEquals("COMPLETED", entity!!.status)
         assertTrue(entity.wasRecovered)

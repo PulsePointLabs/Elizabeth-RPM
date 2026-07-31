@@ -33,6 +33,7 @@ fun RollingTelemetryChart(
     modifier: Modifier = Modifier,
     chartHeight: Dp = 288.dp,
     smoothing: Boolean = true,
+    eventTimestamps: List<Long> = emptyList(),
     onTap: () -> Unit,
     onInspect: (TelemetrySample?) -> Unit,
 ) {
@@ -73,6 +74,26 @@ fun RollingTelemetryChart(
             repeat(7) { column ->
                 val x = left + (right - left) * column / 6f
                 drawLine(grid, Offset(x, top), Offset(x, bottom), 1.dp.toPx())
+            }
+            val firstTimestamp = samples.firstOrNull()?.timestampMillis
+            val lastTimestamp = samples.lastOrNull()?.timestampMillis
+            if (
+                firstTimestamp != null &&
+                lastTimestamp != null &&
+                lastTimestamp > firstTimestamp
+            ) {
+                eventTimestamps.forEach { timestamp ->
+                    val fraction = ((timestamp - firstTimestamp).toDouble() /
+                        (lastTimestamp - firstTimestamp).toDouble()).toFloat().coerceIn(0f, 1f)
+                    val x = left + (right - left) * fraction
+                    drawLine(
+                        ThrottleAmber.copy(alpha = .55f),
+                        Offset(x, top),
+                        Offset(x, bottom),
+                        1.dp.toPx(),
+                    )
+                    drawCircle(ThrottleAmber, 3.dp.toPx(), Offset(x, top + 4.dp.toPx()))
+                }
             }
             if (samples.size > 1) {
                 if ("RPM" in channels) drawSeries(samples, left, right, top, bottom, RpmBlue, smoothing) {
@@ -135,8 +156,12 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSeries(
 
 private fun sampleAtX(samples: List<TelemetrySample>, x: Float, width: Float): TelemetrySample? {
     if (samples.isEmpty() || width <= 0f) return null
-    val index = ((x / width).coerceIn(0f, 1f) * samples.lastIndex).toInt()
-    return samples[index]
+    val fraction = (x / width).coerceIn(0f, 1f)
+    val first = samples.first().timestampMillis
+    val last = samples.last().timestampMillis
+    if (last <= first) return samples.first()
+    val target = first + ((last - first) * fraction).toLong()
+    return samples.minByOrNull { kotlin.math.abs(it.timestampMillis - target) }
 }
 
 @Composable

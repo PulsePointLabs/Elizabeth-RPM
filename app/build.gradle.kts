@@ -13,8 +13,8 @@ android {
         applicationId = "com.pulsepointlabs.elizabethlive"
         minSdk = 31
         targetSdk = 36
-        versionCode = 23
-        versionName = "1.2.1-compact-fuel-panel"
+        versionCode = 24
+        versionName = "1.3.0-trip-insights"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }

@@ -85,6 +85,9 @@ data class SavedTripSummary(
     val startedAtMillis: Long,
     val endedAtMillis: Long,
     val summary: TripSummary,
+    val fuelDataSource: FuelDataSource = FuelDataSource.UNAVAILABLE,
+    val wasRecovered: Boolean = false,
+    val reconnectCount: Int = 0,
 )
 
 data class SavedTrip(
@@ -94,6 +97,9 @@ data class SavedTrip(
     val summary: TripSummary,
     val samples: List<TelemetrySample>,
     val events: List<TripEvent>,
+    val fuelDataSource: FuelDataSource = FuelDataSource.UNAVAILABLE,
+    val wasRecovered: Boolean = false,
+    val reconnectCount: Int = 0,
 )
 
 data class HealthItem(
